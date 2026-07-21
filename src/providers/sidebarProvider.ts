@@ -267,14 +267,22 @@ export class SidebarProvider implements vscode.TreeDataProvider<SidebarItem> {
         // Simulators/devices are down until first-launch completes — flag the stale selection.
         const unavailable = this.projectData?.xcodeReady === false ? ' — unavailable' : '';
         if (dest === 'simulator') {
-            return `${config.simulatorDevice} (Simulator)${unavailable}`;
+            const sim = this.projectData?.simulators.find((s) => s.udid === config.simulatorUdid);
+            let version = '';
+            if (sim) {
+                const formatted = this.formatRuntime(sim.runtime);
+                // formatRuntime returns the raw identifier when it can't parse — don't surface that.
+                if (formatted !== sim.runtime) { version = `${formatted} `; }
+            }
+            return `${config.simulatorDevice} (${version}Simulator)${unavailable}`;
         }
         const physical = this.projectData?.physicalDevices.find(
             d => d.udid === config.simulatorUdid || d.deviceIdentifier === config.deviceIdentifier
         );
         const connectionType = physical?.connectionType;
         const transport = connectionType === 'wired' ? 'USB' : connectionType === 'localNetwork' ? 'Wi-Fi' : connectionType || 'Unknown';
-        return `${config.simulatorDevice} (${transport})${unavailable}`;
+        const version = physical?.osVersion ? `iOS ${physical.osVersion}, ` : '';
+        return `${config.simulatorDevice} (${version}${transport})${unavailable}`;
     }
 
     // ── Data loading ──────────────────────────────────────────
