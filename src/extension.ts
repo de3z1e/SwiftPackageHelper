@@ -841,7 +841,7 @@ export function activate(context: vscode.ExtensionContext): void {
     };
 
     // Register sidebar and no-project placeholder
-    const sidebarProvider = new SidebarProvider(context.workspaceState, context.extensionUri, log);
+    const sidebarProvider = new SidebarProvider(context.workspaceState, log);
     const treeView = vscode.window.createTreeView('vsxcode.sidebar', {
         treeDataProvider: sidebarProvider,
     });

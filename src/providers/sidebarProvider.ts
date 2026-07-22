@@ -131,7 +131,6 @@ export class SidebarProvider implements vscode.TreeDataProvider<SidebarItem> {
 
     constructor(
         private workspaceState: vscode.Memento,
-        private readonly extensionUri: vscode.Uri,
         private readonly log: (message: string) => void = () => {}
     ) {}
 
@@ -194,7 +193,7 @@ export class SidebarProvider implements vscode.TreeDataProvider<SidebarItem> {
             this.createBundleIdItem(config),
             this.createConfigItem('config-swiftVersion', 'Swift Language Version',
                 this.projectData?.swiftVersionByTarget[config.targetName] ? `Swift ${this.projectData.swiftVersionByTarget[config.targetName].replace(/\.0$/, '')}` : '',
-                'vsxcode.sidebar.changeSwiftVersion', 'swift'),
+                'vsxcode.sidebar.changeSwiftVersion', 'vsxcode-swift'),
         ];
         const concurrency = this.formatStrictConcurrency(config.targetName);
         if (concurrency) {
@@ -240,14 +239,7 @@ export class SidebarProvider implements vscode.TreeDataProvider<SidebarItem> {
     ): SidebarItem {
         const item = new SidebarItem(type, label, vscode.TreeItemCollapsibleState.None, value);
         item.description = value;
-        if (iconId === 'swift') {
-            item.iconPath = {
-                light: vscode.Uri.joinPath(this.extensionUri, 'images', 'swift-light.svg'),
-                dark: vscode.Uri.joinPath(this.extensionUri, 'images', 'swift-dark.svg'),
-            };
-        } else {
-            item.iconPath = new vscode.ThemeIcon(iconId);
-        }
+        item.iconPath = new vscode.ThemeIcon(iconId);
         item.command = { command: commandId, title: label };
         return item;
     }
