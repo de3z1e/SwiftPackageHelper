@@ -211,6 +211,10 @@
                     "fontPath": "./images/vsxcode-icons.woff",
                     "fontCharacter": "\\F101"
                 }
+            },
+            "vsxcode-target": {
+                "description": "Xcode target (cube), theme-neutral alias of symbol-method",
+                "default": "symbol-method"
             }
         }
     },

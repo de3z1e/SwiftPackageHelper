@@ -187,7 +187,7 @@ export class SidebarProvider implements vscode.TreeDataProvider<SidebarItem> {
             this.createConfigItem('config-project', 'Project', config.projectFile,
                 'vsxcode.sidebar.changeProject', 'project'),
             this.createConfigItem('config-target', 'Target', config.targetName,
-                'vsxcode.sidebar.changeTarget', 'symbol-method'),
+                'vsxcode.sidebar.changeTarget', 'vsxcode-target'),
             this.createConfigItem('config-scheme', 'Scheme', config.schemeName,
                 'vsxcode.sidebar.changeScheme', 'play-circle'),
             this.createBundleIdItem(config),
