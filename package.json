@@ -2,7 +2,7 @@
     "name": "vsxcode",
     "displayName": "VSXcode",
     "description": "Xcode project integration for VS Code — IntelliSense, build tasks, device/simulator debugging, and native swift-format code formatting.",
-    "version": "3.6.3",
+    "version": "3.6.4",
     "publisher": "de3z1e",
     "icon": "images/icon.png",
     "license": "MIT",
@@ -140,6 +140,11 @@
                 "icon": "$(refresh)"
             },
             {
+                "command": "vsxcode.sidebar.cleanDerivedData",
+                "title": "Clean DerivedData",
+                "icon": "$(trash)"
+            },
+            {
                 "command": "vsxcode.syncProjectFiles",
                 "title": "Swift: Sync Swift Files to Xcode Project",
                 "icon": "$(sync)"
@@ -166,6 +171,11 @@
                     "command": "vsxcode.syncProjectFiles",
                     "when": "view == vsxcode.sidebar",
                     "group": "navigation@4"
+                },
+                {
+                    "command": "vsxcode.sidebar.cleanDerivedData",
+                    "when": "view == vsxcode.sidebar",
+                    "group": "navigation@5"
                 }
             ]
         },

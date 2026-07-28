@@ -22,7 +22,7 @@ The extension adds a panel to the Activity Bar with configurable build settings:
 - **Bundle ID** — read directly from `project.pbxproj`; click to edit (writes `PRODUCT_BUNDLE_IDENTIFIER` back to pbxproj). Shows a ⚠ warning when an app with the same product name but a different bundle id is installed on the selected simulator — usually a leftover from a previous rename. Click the warning to uninstall the orphan.
 - **Device** — select **My Mac**, a connected physical device (USB or Wi-Fi), or an available iOS simulator (My Mac appears only for macOS-capable targets)
 
-Title bar actions: **Build**, **Build & Run**, and **Refresh**.
+Title bar actions: **Build**, **Build & Run**, **Refresh**, **Sync Files**, and **Clean DerivedData** (deletes the current scheme's build cache — or all schemes — and reports the disk space reclaimed).
 
 ### Commands
 
@@ -53,6 +53,8 @@ Build tasks are integrated directly into the extension — no shell scripts, `ta
 - macOS debugging launches the built `.app` directly under LLDB DAP (`request: launch`) — no simulator boot or install step; the app's output streams to the Debug Console.
 - Build configuration is stored in VS Code's workspace state (persists across sessions).
 - Build output is colorized: errors in red, warnings in yellow.
+- Build products are isolated per scheme under `~/Library/Developer/VSCode/DerivedData/`. The **Clean DerivedData** title-bar action deletes the current scheme's tree (or all schemes) after confirmation and reports the reclaimed disk space.
+- After a successful macOS build, the `.app` wrapper's mod date is bumped so the Dock/Finder icon cache picks up app-icon changes — incremental builds rewrite the bundle's contents without touching the wrapper, which otherwise leaves a stale icon on long-lived build trees.
 
 ### Code Format (swift-format)
 
@@ -93,7 +95,7 @@ Working with an AI coding assistant in a Swift project that uses VSXcode? Point 
 ### Installation
 
 - Install from the VS Code Marketplace (search for `VSXcode`).
-- Install the bundled package directly: `code --install-extension vsxcode-3.6.3.vsix`.
+- Install the bundled package directly: `code --install-extension vsxcode-3.6.4.vsix`.
 - VS Code UI alternative: **Extensions → … → Install from VSIX…** and pick the packaged file.
 
 #### Build from source
@@ -101,5 +103,5 @@ Working with an AI coding assistant in a Swift project that uses VSXcode? Point 
 ```bash
 npm install              # install dev dependencies
 npm run package          # runs tsc build and produces vsxcode-<version>.vsix
-code --install-extension vsxcode-3.6.3.vsix
+code --install-extension vsxcode-3.6.4.vsix
 ```

@@ -2,6 +2,23 @@ import * as os from 'os';
 import * as path from 'path';
 import type { BuildTaskConfig, DestinationType } from '../types/interfaces';
 
+const DERIVED_DATA_SEGMENTS = ['Library', 'Developer', 'VSCode', 'DerivedData'];
+
+/** Absolute path to the root holding one DerivedData tree per scheme. */
+export function derivedDataBasePath(): string {
+    return path.join(os.homedir(), ...DERIVED_DATA_SEGMENTS);
+}
+
+/** Absolute path to one scheme's DerivedData tree. */
+export function derivedDataPathForScheme(schemeName: string): string {
+    return path.join(derivedDataBasePath(), schemeName);
+}
+
+/** `$HOME/...` form of a scheme's DerivedData tree for shell command lines. */
+export function derivedDataShellPathForScheme(schemeName: string): string {
+    return `$HOME/${DERIVED_DATA_SEGMENTS.join('/')}/${schemeName}`;
+}
+
 /**
  * Resolve the destination type for a config. Prefers the explicit
  * `destinationType`; falls back to the legacy `isPhysicalDevice` boolean so
@@ -52,10 +69,9 @@ export function xcodebuildDestinationFlags(config: BuildTaskConfig): string[] {
  * Absolute path to the built `.app` bundle in the extension's DerivedData.
  */
 export function builtAppPath(config: BuildTaskConfig): string {
-    const derivedData = path.join(
-        os.homedir(),
-        'Library', 'Developer', 'VSCode', 'DerivedData', config.schemeName
-    );
     const productDir = productDirForDestination(getDestinationType(config));
-    return path.join(derivedData, 'Build', 'Products', productDir, `${config.productName}.app`);
+    return path.join(
+        derivedDataPathForScheme(config.schemeName),
+        'Build', 'Products', productDir, `${config.productName}.app`
+    );
 }

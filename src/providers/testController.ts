@@ -1,16 +1,15 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as cp from 'child_process';
 import { promisify } from 'util';
 import type { BuildTaskConfig } from '../types/interfaces';
 import { parseNativeTargets, isTestTarget } from '../parsers/targets';
 import { determineTargetPath } from '../utils/path';
-import { getDestinationType, xcodebuildDestinationFlags } from '../utils/destination';
+import { derivedDataBasePath, derivedDataShellPathForScheme, getDestinationType, xcodebuildDestinationFlags } from '../utils/destination';
 
 const execFile = promisify(cp.execFile);
-const DERIVED_DATA_BASE = path.join(os.homedir(), 'Library', 'Developer', 'VSCode', 'DerivedData');
+const DERIVED_DATA_BASE = derivedDataBasePath();
 
 interface TestTargetInfo {
     name: string;
@@ -48,6 +47,12 @@ export class XCTestController implements vscode.Disposable {
     private testTargets: TestTargetInfo[] = [];
     private coverageReport: XccovReport | undefined;
     private coverageResultPath: string | undefined;
+    private activeSpawns = 0;
+
+    /** True while a test build/run child process is alive. */
+    get isBusy(): boolean {
+        return this.activeSpawns > 0;
+    }
 
     constructor(
         private workspaceState: vscode.Memento,
@@ -253,7 +258,15 @@ export class XCTestController implements vscode.Disposable {
         const buildForTestingCmd = `${buildCmd} build-for-testing ${filterArgs} 2>&1`;
 
         run.appendOutput('Building for testing...\r\n');
+        this.activeSpawns++;
         const buildExitCode = await new Promise<number>((resolve) => {
+            let settled = false;
+            const settle = (code: number) => {
+                if (settled) { return; }
+                settled = true;
+                this.activeSpawns--;
+                resolve(code);
+            };
             const proc = cp.spawn('/bin/zsh', ['-c', buildForTestingCmd], {
                 cwd: this.rootPath,
                 env: process.env,
@@ -264,8 +277,8 @@ export class XCTestController implements vscode.Disposable {
             proc.stderr?.on('data', (data: Buffer) => {
                 run.appendOutput(data.toString().replace(/\r?\n/g, '\r\n'));
             });
-            proc.on('close', (code) => resolve(code ?? 1));
-            proc.on('error', () => resolve(1));
+            proc.on('close', (code) => settle(code ?? 1));
+            proc.on('error', () => settle(1));
             const buildCancel = token.onCancellationRequested(() => {
                 try { proc.kill('SIGTERM'); } catch { /* already exited */ }
             });
@@ -332,7 +345,7 @@ export class XCTestController implements vscode.Disposable {
     }
 
     private buildXcodebuildBase(config: BuildTaskConfig): string {
-        const derivedData = `$HOME/Library/Developer/VSCode/DerivedData/${config.schemeName}`;
+        const derivedData = derivedDataShellPathForScheme(config.schemeName);
         return [
             'xcodebuild',
             `-project "${config.projectFile}"`,
@@ -385,6 +398,7 @@ export class XCTestController implements vscode.Disposable {
         commandLine: string,
         token: vscode.CancellationToken
     ): Promise<Set<string>> {
+        this.activeSpawns++;
         return new Promise<Set<string>>((resolve) => {
             const proc = cp.spawn('/bin/zsh', ['-c', commandLine], {
                 cwd: this.rootPath,
@@ -416,6 +430,7 @@ export class XCTestController implements vscode.Disposable {
             const done = () => {
                 if (finished) { return; }
                 finished = true;
+                this.activeSpawns--;
                 cancelListener.dispose();
                 if (buffer.length > 0) {
                     this.parseLine(run, buffer, failureDetails, reportedItems, currentTestItem);

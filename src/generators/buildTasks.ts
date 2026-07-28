@@ -1,8 +1,8 @@
 import type { BuildTaskConfig } from '../types/interfaces';
-import { getDestinationType, productDirForDestination, xcodebuildDestinationFlags } from '../utils/destination';
+import { derivedDataShellPathForScheme, getDestinationType, productDirForDestination, xcodebuildDestinationFlags } from '../utils/destination';
 
 function xcodebuildArgs(config: BuildTaskConfig): string[] {
-    const derivedData = `$HOME/Library/Developer/VSCode/DerivedData/${config.schemeName}`;
+    const derivedData = derivedDataShellPathForScheme(config.schemeName);
     return [
         'set -eo pipefail; xcodebuild',
         `-project "${config.projectFile}"`,
@@ -20,16 +20,22 @@ function devicectlId(config: BuildTaskConfig): string {
 
 // Shell-string path ($HOME-relative) to the built .app for the active destination.
 function appBundleShellPath(config: BuildTaskConfig): string {
-    const derivedData = `$HOME/Library/Developer/VSCode/DerivedData/${config.schemeName}`;
+    const derivedData = derivedDataShellPathForScheme(config.schemeName);
     const productDir = productDirForDestination(getDestinationType(config));
     return `${derivedData}/Build/Products/${productDir}/${config.productName}.app`;
 }
 
 export function buildCommandLine(config: BuildTaskConfig): string {
-    return [
+    const parts = [
         ...xcodebuildArgs(config),
         'build 2>&1',
-    ].join(' ');
+    ];
+    // IconServices keys its icon cache on the .app wrapper's mod date, which incremental
+    // xcodebuild never bumps — Dock/Finder otherwise serve a stale icon after asset edits.
+    if (getDestinationType(config) === 'mac') {
+        parts.push(`&& touch -c "${appBundleShellPath(config)}"`);
+    }
+    return parts.join(' ');
 }
 
 export function buildForTestingCommandLine(config: BuildTaskConfig): string {

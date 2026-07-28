@@ -96,6 +96,7 @@ User-facing commands (palette and programmatic):
 | `vsxcode.sidebar.build` | Build (same as `Cmd+Shift+B`) |
 | `vsxcode.sidebar.buildAndRun` | Build & run with debugger (same as `Cmd+R`) |
 | `vsxcode.sidebar.refresh` | Refresh sidebar UI |
+| `vsxcode.sidebar.cleanDerivedData` | Delete the current scheme's DerivedData tree (or all schemes) after confirmation; refuses while a build/test/debug is active |
 
 Invoke programmatically with:
 ```ts
@@ -147,6 +148,7 @@ Before doing one of these manually, check the table:
 | Format Swift code | Save the file (format-on-save) or invoke "Format Document" |
 | Configure swift-format rules | Open the **Code Format** sidebar panel |
 | Refresh SourceKit-LSP after Xcode version switch | Run command `vsxcode.createFromXcodeproj` to regenerate Package.swift + serverArguments |
+| Clean the build cache (stale build state, disk space) | Run command `vsxcode.sidebar.cleanDerivedData` — do not `rm -rf` DerivedData by hand |
 
 ---
 
@@ -174,4 +176,4 @@ Before doing one of these manually, check the table:
 
 ## Version
 
-This document describes VSXcode v3.6.3. Behavior is stable across patch versions; if a fundamental capability changes, this file will be updated.
+This document describes VSXcode v3.6.4. Behavior is stable across patch versions; if a fundamental capability changes, this file will be updated.

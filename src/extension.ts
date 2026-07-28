@@ -26,7 +26,7 @@ import { generateSwiftSettings } from './generators/swiftSettings';
 import { generateLinkerSettings } from './generators/linkerSettings';
 import { buildPackageSwift, formatPackageDependencyEntry } from './generators/packageSwift';
 import { listAvailableSimulators, listPhysicalDevices, devicectlInstall, checkDeviceReady, findDeviceSymbols, getMyMacDestination } from './utils/simulator';
-import { getDestinationType, builtAppPath } from './utils/destination';
+import { getDestinationType, builtAppPath, derivedDataBasePath } from './utils/destination';
 import { XcodeBuildTaskProvider, TASK_TYPE } from './providers/taskProvider';
 import { XcodeDebugConfigProvider } from './providers/debugConfigProvider';
 import { SidebarProvider, autoConfigureBuildTasks, promptXcodeFirstLaunch } from './providers/sidebarProvider';
@@ -745,6 +745,29 @@ function executeTaskAndWait(task: vscode.Task, onStart?: (exec: vscode.TaskExecu
         const execution = await vscode.tasks.executeTask(task);
         onStart?.(execution);
     });
+}
+
+function formatBytes(bytes: number): string {
+    if (bytes >= 1024 ** 3) { return `${(bytes / 1024 ** 3).toFixed(1)} GB`; }
+    if (bytes >= 1024 ** 2) { return `${(bytes / 1024 ** 2).toFixed(1)} MB`; }
+    if (bytes >= 1024) { return `${Math.round(bytes / 1024)} KB`; }
+    return `${bytes} B`;
+}
+
+// Sizes are cosmetic — a `du` failure yields an empty map rather than aborting the clean.
+async function directorySizesBytes(dirs: string[]): Promise<Map<string, number>> {
+    if (dirs.length === 0) { return new Map(); }
+    try {
+        const { stdout } = await execFile('/usr/bin/du', ['-sk', ...dirs], { maxBuffer: 4 * 1024 * 1024 });
+        const sizes = new Map<string, number>();
+        for (const line of stdout.toString().split('\n')) {
+            const match = line.match(/^(\d+)\s+(.+)$/);
+            if (match) { sizes.set(match[2], Number(match[1]) * 1024); }
+        }
+        return sizes;
+    } catch {
+        return new Map();
+    }
 }
 
 // Watch pbxproj for PRODUCT_BUNDLE_IDENTIFIER renames so we can offer to
@@ -1840,6 +1863,109 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     );
 
+    const cleanDerivedDataCmd = vscode.commands.registerCommand(
+        'vsxcode.sidebar.cleanDerivedData',
+        async () => {
+            // Deleting the tree under a live build/test/debug run would fail it mid-write.
+            const buildOrRunActive = (): boolean =>
+                vscode.tasks.taskExecutions.some((exec) => exec.task.definition.type === TASK_TYPE)
+                || vscode.debug.activeDebugSession !== undefined
+                || testController.isBusy;
+            const warnBusy = (): void => {
+                vscode.window.showWarningMessage(
+                    'Cannot clean DerivedData while a build, test run, or debug session is active. Stop it and try again.'
+                );
+            };
+            if (buildOrRunActive()) {
+                warnBusy();
+                return;
+            }
+
+            const base = derivedDataBasePath();
+            let schemeDirs: string[] = [];
+            try {
+                schemeDirs = (await fsp.readdir(base, { withFileTypes: true }))
+                    .filter((entry) => entry.isDirectory())
+                    .map((entry) => entry.name);
+            } catch { /* base doesn't exist yet */ }
+            if (schemeDirs.length === 0) {
+                vscode.window.showInformationMessage('VSXcode DerivedData is already clean.');
+                return;
+            }
+
+            const config = context.workspaceState.get<BuildTaskConfig>('buildTaskConfig');
+            const currentScheme = config && schemeDirs.includes(config.schemeName)
+                ? config.schemeName
+                : undefined;
+
+            const sizes = await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Window, title: 'Measuring DerivedData…' },
+                () => directorySizesBytes(schemeDirs.map((dir) => path.join(base, dir)))
+            );
+            const totalBytes = [...sizes.values()].reduce((sum, b) => sum + b, 0);
+
+            type CleanPick = vscode.QuickPickItem & { schemes: string[]; bytes: number | undefined; noun: string };
+            const picks: CleanPick[] = [];
+            if (currentScheme) {
+                const bytes = sizes.get(path.join(base, currentScheme));
+                picks.push({
+                    label: `Clean "${currentScheme}"`,
+                    description: bytes === undefined ? undefined : formatBytes(bytes),
+                    detail: path.join(base, currentScheme),
+                    schemes: [currentScheme],
+                    bytes,
+                    noun: `scheme "${currentScheme}"`,
+                });
+            }
+            if (schemeDirs.length > 1 || !currentScheme) {
+                picks.push({
+                    label: `Clean All Schemes (${schemeDirs.length})`,
+                    description: sizes.size === 0 ? undefined : formatBytes(totalBytes),
+                    detail: base,
+                    schemes: schemeDirs,
+                    bytes: sizes.size === 0 ? undefined : totalBytes,
+                    noun: schemeDirs.length === 1 ? `scheme "${schemeDirs[0]}"` : `all ${schemeDirs.length} schemes`,
+                });
+            }
+            const pick = picks.length === 1
+                ? picks[0]
+                : await vscode.window.showQuickPick(picks, { placeHolder: 'Clean DerivedData for…' });
+            if (!pick) { return; }
+
+            const sizeNote = pick.bytes === undefined ? '' : ` This frees ${formatBytes(pick.bytes)}.`;
+            const confirmed = await vscode.window.showWarningMessage(
+                `Delete DerivedData for ${pick.noun}?${sizeNote} The next build will start from scratch.`,
+                { modal: true },
+                'Delete'
+            );
+            if (confirmed !== 'Delete') { return; }
+
+            // Re-check: a build or test run can start while the prompts are up.
+            if (buildOrRunActive()) {
+                warnBusy();
+                return;
+            }
+
+            try {
+                await vscode.window.withProgress(
+                    { location: vscode.ProgressLocation.Notification, title: 'Cleaning DerivedData…' },
+                    async () => {
+                        for (const scheme of pick.schemes) {
+                            await fsp.rm(path.join(base, scheme), { recursive: true, force: true });
+                        }
+                    }
+                );
+            } catch (error) {
+                const message = (error as { message?: string }).message || String(error);
+                vscode.window.showErrorMessage(`VSXcode: failed to clean DerivedData — ${message}`);
+                return;
+            }
+            log(`[clean-derived-data] removed ${pick.schemes.length} scheme tree(s) under ${base}`);
+            const freed = pick.bytes === undefined ? '' : ` — freed ${formatBytes(pick.bytes)}`;
+            vscode.window.showInformationMessage(`Cleaned DerivedData for ${pick.noun}${freed}.`);
+        }
+    );
+
     // ── File watcher ──────────────────────────────────────────
 
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.pbxproj');
@@ -2038,6 +2164,7 @@ export function activate(context: vscode.ExtensionContext): void {
         taskProvider, debugProvider, treeView, testController,
         changeProjectCmd, changeTargetCmd, changeSchemeCmd, changeBundleIdCmd, uninstallStaleAppsCmd,
         selectSimulatorCmd, changeSwiftVersionCmd, changeStrictConcurrencyCmd, buildCmd, buildAndRunCmd, refreshCmd,
+        cleanDerivedDataCmd,
         watcher, onProjectChange, dyldTracker, onDebugStart, onDebugEnd,
         outputChannel
     );
