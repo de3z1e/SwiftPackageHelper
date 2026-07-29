@@ -40,6 +40,7 @@ import {
     parseBundleIdFromPbxproj,
     listInstalledSimulatorApps,
     uninstallSimulatorApp,
+    readInfoPlistBundleId,
     getInstalledAppExecutableMtime,
     formatMtime,
     readInfoPlistDisplayNames,
@@ -830,40 +831,61 @@ async function handlePossibleBundleIdRename(
 // the new one — two icons, one running stale code. Detect that twin
 // install and offer to remove it.
 const DISMISSED_TWIN_WARNINGS_KEY = 'dismissedTwinWarnings';
+// Buttoned notifications never auto-dismiss, so repeat builds would stack duplicate toasts.
+const twinPromptsInFlight = new Set<string>();
 async function offerSimulatorTwinUninstall(
     log: (message: string) => void,
     workspaceState: vscode.Memento,
     udid: string,
     appPath: string,
     newBundleId: string,
-): Promise<void> {
+): Promise<boolean> {
     const newNames = await readInfoPlistDisplayNames(path.join(appPath, 'Info.plist'));
     const productName = newNames.name;
-    if (!productName) { return; }
+    if (!productName) { return false; }
     const installed = await listInstalledSimulatorApps(udid);
     const twin = installed.find((app) =>
         app.bundleId !== newBundleId && app.bundleName === productName
     );
-    if (!twin) { return; }
+    if (!twin) { return false; }
     const dismissed = workspaceState.get<string[]>(DISMISSED_TWIN_WARNINGS_KEY, []);
     if (dismissed.includes(twin.bundleId)) {
         log(`[simulator-debug] product-name twin ${twin.bundleId} present, but its warning was dismissed — skipping prompt`);
-        return;
+        return false;
     }
-    const twinLabel = twin.displayName || twin.bundleName || twin.bundleId;
-    log(`[simulator-debug] found product-name twin: "${twinLabel}" (${twin.bundleId})`);
-    const choice = await vscode.window.showWarningMessage(
-        `Another app with the same product name is installed on the simulator: "${twinLabel}" (${twin.bundleId}). It probably belongs to a previous bundle id and will appear as a duplicate icon. Uninstall it?`,
-        'Uninstall',
-        'Keep',
-        "Don't Ask Again",
-    );
-    if (choice === 'Uninstall') {
-        log(`[simulator-debug] uninstalling twin ${twin.bundleId}`);
-        await uninstallSimulatorApp(udid, twin.bundleId);
-    } else if (choice === "Don't Ask Again") {
-        log(`[simulator-debug] suppressing twin warning for ${twin.bundleId}`);
-        await workspaceState.update(DISMISSED_TWIN_WARNINGS_KEY, [...dismissed, twin.bundleId]);
+    if (twinPromptsInFlight.has(twin.bundleId)) { return false; }
+    twinPromptsInFlight.add(twin.bundleId);
+    try {
+        const twinLabel = twin.displayName || twin.bundleName || twin.bundleId;
+        log(`[simulator-debug] found product-name twin: "${twinLabel}" (${twin.bundleId})`);
+        const choice = await vscode.window.showWarningMessage(
+            `Another app with the same product name is installed on the simulator: "${twinLabel}" (${twin.bundleId}). It probably belongs to a previous bundle id and will appear as a duplicate icon. Uninstall it?`,
+            'Uninstall',
+            'Keep',
+            "Don't Ask Again",
+        );
+        if (choice === 'Uninstall') {
+            // The prompt outlives the run, so a revert-and-rebuild meanwhile could make the captured twin id the current app.
+            const currentBuiltId = await readInfoPlistBundleId(path.join(appPath, 'Info.plist'));
+            if (currentBuiltId === twin.bundleId) {
+                log(`[simulator-debug] skipping twin uninstall — ${twin.bundleId} is now the current bundle id`);
+                return false;
+            }
+            log(`[simulator-debug] uninstalling twin ${twin.bundleId}`);
+            await uninstallSimulatorApp(udid, twin.bundleId);
+            return true;
+        }
+        if (choice === "Don't Ask Again") {
+            log(`[simulator-debug] suppressing twin warning for ${twin.bundleId}`);
+            // Re-read: a concurrent prompt for a different twin may have added its id since the snapshot above.
+            const latest = workspaceState.get<string[]>(DISMISSED_TWIN_WARNINGS_KEY, []);
+            if (!latest.includes(twin.bundleId)) {
+                await workspaceState.update(DISMISSED_TWIN_WARNINGS_KEY, [...latest, twin.bundleId]);
+            }
+        }
+        return false;
+    } finally {
+        twinPromptsInFlight.delete(twin.bundleId);
     }
 }
 
@@ -1492,9 +1514,15 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
         }
         const bundleId = resolved.bundleId;
-
-        await offerSimulatorTwinUninstall(log, context.workspaceState, udid, appPath, bundleId);
         if (runId !== currentRunId) return;
+
+        // Not awaited so the prompt can't gate install/launch; the orphan's bundle id differs, so removing it can't touch this build.
+        offerSimulatorTwinUninstall(log, context.workspaceState, udid, appPath, bundleId)
+            .then((didUninstall) => {
+                // The post-install refresh usually runs before the prompt resolves, leaving a stale orphan warning behind.
+                if (didUninstall) { sidebarProvider.refresh(); }
+            })
+            .catch((error) => log(`[simulator-debug] twin uninstall check failed: ${error}`));
 
         // 2. Boot simulator and install app
         const cp = await import('child_process');
