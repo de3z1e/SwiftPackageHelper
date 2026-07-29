@@ -829,8 +829,10 @@ async function handlePossibleBundleIdRename(
 // simulator under the old bundle id while the new build installs under
 // the new one — two icons, one running stale code. Detect that twin
 // install and offer to remove it.
+const DISMISSED_TWIN_WARNINGS_KEY = 'dismissedTwinWarnings';
 async function offerSimulatorTwinUninstall(
     log: (message: string) => void,
+    workspaceState: vscode.Memento,
     udid: string,
     appPath: string,
     newBundleId: string,
@@ -843,16 +845,25 @@ async function offerSimulatorTwinUninstall(
         app.bundleId !== newBundleId && app.bundleName === productName
     );
     if (!twin) { return; }
+    const dismissed = workspaceState.get<string[]>(DISMISSED_TWIN_WARNINGS_KEY, []);
+    if (dismissed.includes(twin.bundleId)) {
+        log(`[simulator-debug] product-name twin ${twin.bundleId} present, but its warning was dismissed — skipping prompt`);
+        return;
+    }
     const twinLabel = twin.displayName || twin.bundleName || twin.bundleId;
     log(`[simulator-debug] found product-name twin: "${twinLabel}" (${twin.bundleId})`);
     const choice = await vscode.window.showWarningMessage(
         `Another app with the same product name is installed on the simulator: "${twinLabel}" (${twin.bundleId}). It probably belongs to a previous bundle id and will appear as a duplicate icon. Uninstall it?`,
         'Uninstall',
         'Keep',
+        "Don't Ask Again",
     );
     if (choice === 'Uninstall') {
         log(`[simulator-debug] uninstalling twin ${twin.bundleId}`);
         await uninstallSimulatorApp(udid, twin.bundleId);
+    } else if (choice === "Don't Ask Again") {
+        log(`[simulator-debug] suppressing twin warning for ${twin.bundleId}`);
+        await workspaceState.update(DISMISSED_TWIN_WARNINGS_KEY, [...dismissed, twin.bundleId]);
     }
 }
 
@@ -1482,7 +1493,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const bundleId = resolved.bundleId;
 
-        await offerSimulatorTwinUninstall(log, udid, appPath, bundleId);
+        await offerSimulatorTwinUninstall(log, context.workspaceState, udid, appPath, bundleId);
         if (runId !== currentRunId) return;
 
         // 2. Boot simulator and install app
