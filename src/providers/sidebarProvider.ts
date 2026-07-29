@@ -217,15 +217,16 @@ export class SidebarProvider implements vscode.TreeDataProvider<SidebarItem> {
 
         const item = new SidebarItem('config-bundleId', 'Bundle ID', vscode.TreeItemCollapsibleState.None, fromPbx);
         item.description = fromPbx;
+        // Clicking always edits — the warning state must not hijack the edit affordance.
+        item.command = { command: 'vsxcode.sidebar.changeBundleId', title: 'Bundle ID' };
         if (hasStaleInstall) {
             const ids = stale.map((s) => s.bundleId).join(', ');
             item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('list.warningForeground'));
-            item.tooltip = `An orphan install with a different bundle id is on the selected simulator: ${ids}. It probably belongs to a previous bundle id and will appear as a duplicate icon. Click to uninstall.`;
-            item.command = { command: 'vsxcode.sidebar.uninstallStaleAppsOnSimulator', title: 'Uninstall stale apps' };
+            item.tooltip = `An orphan install with a different bundle id is on the selected simulator: ${ids}. It probably belongs to a previous bundle id and will appear as a duplicate icon. Click to edit the bundle id; use the trash icon to uninstall the orphan(s).`;
+            item.contextValue = 'config-bundleId-stale';
         } else {
             item.iconPath = new vscode.ThemeIcon('tag');
             item.tooltip = 'Bundle id from project.pbxproj (the source of truth). Click to edit PRODUCT_BUNDLE_IDENTIFIER.';
-            item.command = { command: 'vsxcode.sidebar.changeBundleId', title: 'Bundle ID' };
         }
         return item;
     }

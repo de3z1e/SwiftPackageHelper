@@ -19,7 +19,7 @@ The extension adds a panel to the Activity Bar with configurable build settings:
 - **Project** — select which `.xcodeproj` to use (when multiple exist)
 - **Target** — select the build target
 - **Scheme** — select the build scheme
-- **Bundle ID** — read directly from `project.pbxproj`; click to edit (writes `PRODUCT_BUNDLE_IDENTIFIER` back to pbxproj). Shows a ⚠ warning when an app with the same product name but a different bundle id is installed on the selected simulator — usually a leftover from a previous rename. Click the warning to uninstall the orphan.
+- **Bundle ID** — read directly from `project.pbxproj`; click to edit (writes `PRODUCT_BUNDLE_IDENTIFIER` back to pbxproj). Shows a ⚠ warning when an app with the same product name but a different bundle id is installed on the selected simulator — usually a leftover from a previous rename. Use the row's trash action to uninstall the orphan.
 - **Device** — select **My Mac**, a connected physical device (USB or Wi-Fi), or an available iOS simulator (My Mac appears only for macOS-capable targets)
 
 Title bar actions: **Build**, **Build & Run**, **Refresh**, **Sync Files**, and **Clean DerivedData** (deletes the current scheme's build cache — or all schemes — and reports the disk space reclaimed).

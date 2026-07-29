@@ -771,6 +771,9 @@ async function directorySizesBytes(dirs: string[]): Promise<Map<string, number>>
     }
 }
 
+// Bundle ids whose orphan-uninstall prompts were answered "Don't Ask Again".
+const DISMISSED_STALE_INSTALL_WARNINGS_KEY = 'dismissedStaleInstallWarnings';
+
 // Watch pbxproj for PRODUCT_BUNDLE_IDENTIFIER renames so we can offer to
 // remove the previous install from the selected simulator/device. The
 // previous id is remembered in process memory only — pbxproj is the
@@ -782,56 +785,82 @@ async function handlePossibleBundleIdRename(
     log: (message: string) => void,
     workspaceState: vscode.Memento,
     projectRoot: string,
-): Promise<void> {
+): Promise<boolean> {
     const config = workspaceState.get<BuildTaskConfig>('buildTaskConfig');
-    if (!config) { return; }
+    if (!config) { return false; }
     const pbxprojPath = path.join(projectRoot, config.projectFile, 'project.pbxproj');
     const fromPbx = await parseBundleIdFromPbxproj(pbxprojPath, config.targetName, 'Debug');
-    if (!fromPbx) { return; }
+    if (!fromPbx) { return false; }
     const previous = lastKnownPbxBundleId;
     lastKnownPbxBundleId = fromPbx;
-    if (!previous) { return; }
-    if (previous === fromPbx) { return; }
+    if (!previous) { return false; }
+    if (previous === fromPbx) { return false; }
     // Skip interpolated templates — comparing a raw template to a
     // previously-resolved value would produce false positives.
-    if (fromPbx.includes('$(') || previous.includes('$(')) { return; }
+    if (fromPbx.includes('$(') || previous.includes('$(')) { return false; }
     // macOS has no simulator/device install to uninstall — skip the prompt
     // (and don't consume the rename-notified dedupe key). lastKnownPbxBundleId
     // is already updated above, so detection stays consistent across switches.
-    if (getDestinationType(config) === 'mac') { return; }
+    if (getDestinationType(config) === 'mac') { return false; }
     const renameKey = `${previous}→${fromPbx}`;
-    if (lastRenameNotifiedFor === renameKey) { return; }
+    if (lastRenameNotifiedFor === renameKey) { return false; }
     lastRenameNotifiedFor = renameKey;
+    const dismissed = workspaceState.get<string[]>(DISMISSED_STALE_INSTALL_WARNINGS_KEY, []);
+    if (dismissed.includes(previous)) {
+        log(`[pbxproj-watcher] rename "${previous}" → "${fromPbx}" detected, but the uninstall warning for ${previous} was dismissed — skipping prompt`);
+        return false;
+    }
 
     log(`[pbxproj-watcher] bundle id rename detected: "${previous}" → "${fromPbx}"`);
+    const destination = config.isPhysicalDevice ? 'device' : 'simulator';
     const choice = await vscode.window.showWarningMessage(
-        `Bundle id changed: ${previous} → ${fromPbx}. The previous install may linger on your simulator/device and appear as a duplicate icon. Uninstall it?`,
+        `Bundle id changed: ${previous} → ${fromPbx}. The previous install may linger on your ${destination} and appear as a duplicate icon. Uninstall it?`,
         'Uninstall',
         'Keep',
+        "Don't Ask Again",
     );
-    if (choice !== 'Uninstall') { return; }
+    if (choice === "Don't Ask Again") {
+        log(`[pbxproj-watcher] suppressing uninstall warning for ${previous}`);
+        // Re-read: a concurrent prompt may have added its id since the snapshot above.
+        const latest = workspaceState.get<string[]>(DISMISSED_STALE_INSTALL_WARNINGS_KEY, []);
+        if (!latest.includes(previous)) {
+            await workspaceState.update(DISMISSED_STALE_INSTALL_WARNINGS_KEY, [...latest, previous]);
+        }
+        return false;
+    }
+    if (choice !== 'Uninstall') { return false; }
+
+    // The prompt outlives further edits, so a revert meanwhile could make "previous" the current id again.
+    const currentPbx = await parseBundleIdFromPbxproj(pbxprojPath, config.targetName, 'Debug');
+    if (currentPbx === previous) {
+        log(`[pbxproj-watcher] skipping uninstall — ${previous} is the current bundle id again`);
+        return false;
+    }
 
     const cp = await import('child_process');
+    let didUninstall = false;
     if (config.simulatorUdid && !config.isPhysicalDevice) {
         log(`[pbxproj-watcher] uninstalling "${previous}" from simulator ${config.simulatorUdid}`);
         await new Promise<void>((resolve) => {
             cp.exec(`xcrun simctl uninstall "${config.simulatorUdid}" "${previous}"`, () => resolve());
         });
+        didUninstall = true;
     }
     if (config.deviceIdentifier && config.isPhysicalDevice) {
         log(`[pbxproj-watcher] uninstalling "${previous}" from device ${config.deviceIdentifier}`);
         await new Promise<void>((resolve) => {
             cp.exec(`xcrun devicectl device uninstall app --device "${config.deviceIdentifier}" "${previous}"`, () => resolve());
         });
+        didUninstall = true;
     }
+    return didUninstall;
 }
 
 // Renaming PRODUCT_BUNDLE_IDENTIFIER leaves the previous install on the
 // simulator under the old bundle id while the new build installs under
 // the new one — two icons, one running stale code. Detect that twin
 // install and offer to remove it.
-const DISMISSED_TWIN_WARNINGS_KEY = 'dismissedTwinWarnings';
-// Buttoned notifications never auto-dismiss, so repeat builds would stack duplicate toasts.
+// An unanswered prompt persists in the notification center, so repeat builds would stack duplicates.
 const twinPromptsInFlight = new Set<string>();
 async function offerSimulatorTwinUninstall(
     log: (message: string) => void,
@@ -848,7 +877,7 @@ async function offerSimulatorTwinUninstall(
         app.bundleId !== newBundleId && app.bundleName === productName
     );
     if (!twin) { return false; }
-    const dismissed = workspaceState.get<string[]>(DISMISSED_TWIN_WARNINGS_KEY, []);
+    const dismissed = workspaceState.get<string[]>(DISMISSED_STALE_INSTALL_WARNINGS_KEY, []);
     if (dismissed.includes(twin.bundleId)) {
         log(`[simulator-debug] product-name twin ${twin.bundleId} present, but its warning was dismissed — skipping prompt`);
         return false;
@@ -878,9 +907,9 @@ async function offerSimulatorTwinUninstall(
         if (choice === "Don't Ask Again") {
             log(`[simulator-debug] suppressing twin warning for ${twin.bundleId}`);
             // Re-read: a concurrent prompt for a different twin may have added its id since the snapshot above.
-            const latest = workspaceState.get<string[]>(DISMISSED_TWIN_WARNINGS_KEY, []);
+            const latest = workspaceState.get<string[]>(DISMISSED_STALE_INSTALL_WARNINGS_KEY, []);
             if (!latest.includes(twin.bundleId)) {
-                await workspaceState.update(DISMISSED_TWIN_WARNINGS_KEY, [...latest, twin.bundleId]);
+                await workspaceState.update(DISMISSED_STALE_INSTALL_WARNINGS_KEY, [...latest, twin.bundleId]);
             }
         }
         return false;
@@ -2018,7 +2047,10 @@ export function activate(context: vscode.ExtensionContext): void {
                 log(`[file-watcher] Package.swift regen failed: ${message}`);
             });
         }
-        await handlePossibleBundleIdRename(log, context.workspaceState, projectRoot);
+        // Not awaited: the prompt can sit unanswered indefinitely.
+        handlePossibleBundleIdRename(log, context.workspaceState, projectRoot)
+            .then((didUninstall) => { if (didUninstall) { sidebarProvider.refresh(); } })
+            .catch((error) => log(`[pbxproj-watcher] rename check failed: ${error}`));
     });
 
     // ── Swift file watcher (auto-sync to pbxproj) ─────────────

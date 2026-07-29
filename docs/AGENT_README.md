@@ -107,7 +107,7 @@ Or suggest the user run them from the Command Palette (`Cmd+Shift+P`).
 ### Sidebar UI
 
 There's a "VSXcode" activity-bar item with two views when an Xcode project is detected:
-- **Xcode Build** — Tree view showing current project, target, scheme, bundle ID, swift version, strict concurrency, device. Each row is clickable to change the corresponding setting. The Bundle ID row reads from `project.pbxproj` and shows a warning when an app with the same product name but different bundle id is installed on the selected simulator (typically an orphan from a previous rename); clicking the warning offers to uninstall it.
+- **Xcode Build** — Tree view showing current project, target, scheme, bundle ID, swift version, strict concurrency, device. Each row is clickable to change the corresponding setting. The Bundle ID row reads from `project.pbxproj` and shows a warning when an app with the same product name but different bundle id is installed on the selected simulator (typically an orphan from a previous rename); an inline trash action on that row offers to uninstall it.
 - **Code Format** — Webview for swift-format rule configuration and the Homebrew install button.
 
 When the user asks to change build configuration, suggest the sidebar instead of editing config files.

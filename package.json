@@ -110,7 +110,8 @@
             },
             {
                 "command": "vsxcode.sidebar.uninstallStaleAppsOnSimulator",
-                "title": "Uninstall Stale Apps on Simulator"
+                "title": "Uninstall Stale Apps on Simulator",
+                "icon": "$(trash)"
             },
             {
                 "command": "vsxcode.sidebar.selectSimulator",
@@ -176,6 +177,13 @@
                     "command": "vsxcode.sidebar.cleanDerivedData",
                     "when": "view == vsxcode.sidebar",
                     "group": "navigation@5"
+                }
+            ],
+            "view/item/context": [
+                {
+                    "command": "vsxcode.sidebar.uninstallStaleAppsOnSimulator",
+                    "when": "view == vsxcode.sidebar && viewItem == config-bundleId-stale",
+                    "group": "inline"
                 }
             ]
         },
