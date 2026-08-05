@@ -9,7 +9,7 @@ import { parseNativeTargets, isTestTarget } from '../parsers/targets';
 import { getBuildSettingsForTarget, getProjectBuildSettings, platformsSupported } from '../parsers/buildSettings';
 import { getDestinationType } from '../utils/destination';
 import { detectSupportedSwiftVersions, isXcodeFirstLaunchComplete } from '../utils/version';
-import { listInstalledSimulatorApps, type InstalledAppSummary } from '../utils/bundleId';
+import { listInstalledSimulatorApps, effectiveBundleId, DEV_BUNDLE_ID_SUFFIX, type InstalledAppSummary } from '../utils/bundleId';
 
 const execFile = promisify(execFileCallback);
 
@@ -114,10 +114,9 @@ export interface ProjectData {
     // False when Xcode's first-launch setup is incomplete — simulators/devices unavailable.
     xcodeReady: boolean;
     supportedSwiftVersions: string[];
-    /** Apps installed on the currently-selected simulator whose
-     *  CFBundleName matches the project's product name but whose
-     *  bundle id differs from pbxproj. These are usually orphans from
-     *  a previous bundle-id rename. */
+    /** Apps installed on the currently-selected simulator whose CFBundleName
+     *  matches the project's product name but whose bundle id is neither the
+     *  pbxproj value nor its dev counterpart — usually orphans from a rename. */
     staleSimulatorInstalls: InstalledAppSummary[];
 }
 
@@ -206,27 +205,37 @@ export class SidebarProvider implements vscode.TreeDataProvider<SidebarItem> {
         return items;
     }
 
-    // pbxproj is the source of truth for bundle id. We surface that value
-    // directly. The warning state is for *external* drift: an old app
-    // installed on the simulator with the same product name but a
-    // different bundle id — usually an orphan from a previous rename.
+    // The row shows what a build produces, not what pbxproj stores — those differ
+    // while Dev Bundle ID is on, which is an override and never edits pbxproj.
+    // The warning state is for *external* drift: an old app installed on the
+    // simulator with the same product name but a different bundle id — usually
+    // an orphan from a previous rename.
     private createBundleIdItem(config: BuildTaskConfig): SidebarItem {
         const fromPbx = this.projectData?.bundleIdByTarget[config.targetName] || '';
         const stale = this.projectData?.staleSimulatorInstalls || [];
         const hasStaleInstall = stale.length > 0;
+        const devEnabled = config.devBundleId === true;
+        const builtId = effectiveBundleId(fromPbx, devEnabled);
+        const devLabel = devEnabled ? 'Dev: On' : 'Dev: Off';
+        const devTooltip = devEnabled
+            ? `\n\nDev Bundle ID is on: builds append "${DEV_BUNDLE_ID_SUFFIX}"${fromPbx ? ` and install as ${builtId}` : ''}, so the development app sits alongside the shipping one. project.pbxproj keeps ${fromPbx || 'its own value'}. Use the ✓ button on this row to turn it off.`
+            : `\n\nDev Bundle ID is off: builds use the bundle id exactly as committed. Use the ○ button on this row to build as ${fromPbx ? effectiveBundleId(fromPbx, true) : `…${DEV_BUNDLE_ID_SUFFIX}`} instead, so a development build installs alongside the shipping app.`;
+        // Encoded into contextValue so package.json can pick which half of the toggle pair to render.
+        const devContext = devEnabled ? 'devOn' : 'devOff';
 
-        const item = new SidebarItem('config-bundleId', 'Bundle ID', vscode.TreeItemCollapsibleState.None, fromPbx);
-        item.description = fromPbx;
-        // Clicking always edits — the warning state must not hijack the edit affordance.
+        const item = new SidebarItem('config-bundleId', 'Bundle ID', vscode.TreeItemCollapsibleState.None, builtId);
+        item.description = fromPbx ? `${builtId} · ${devLabel}` : devLabel;
+        // Clicking always edits — neither the warning state nor the toggle may hijack that.
         item.command = { command: 'vsxcode.sidebar.changeBundleId', title: 'Bundle ID' };
         if (hasStaleInstall) {
             const ids = stale.map((s) => s.bundleId).join(', ');
             item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('list.warningForeground'));
-            item.tooltip = `An orphan install with a different bundle id is on the selected simulator: ${ids}. It probably belongs to a previous bundle id and will appear as a duplicate icon. Click to edit the bundle id; use the trash icon to uninstall the orphan(s).`;
-            item.contextValue = 'config-bundleId-stale';
+            item.tooltip = `An orphan install with a different bundle id is on the selected simulator: ${ids}. It probably belongs to a previous bundle id and will appear as a duplicate icon. Click to edit the bundle id; use the trash icon to uninstall the orphan(s).${devTooltip}`;
+            item.contextValue = `config-bundleId-stale-${devContext}`;
         } else {
             item.iconPath = new vscode.ThemeIcon('tag');
-            item.tooltip = 'Bundle id from project.pbxproj (the source of truth). Click to edit PRODUCT_BUNDLE_IDENTIFIER.';
+            item.tooltip = `Bundle id from project.pbxproj (the source of truth). Click to edit PRODUCT_BUNDLE_IDENTIFIER.${devTooltip}`;
+            item.contextValue = `config-bundleId-${devContext}`;
         }
         return item;
     }
@@ -409,12 +418,14 @@ export class SidebarProvider implements vscode.TreeDataProvider<SidebarItem> {
         const productName = productNameByTarget[config.targetName] || config.productName;
         if (!productName) { return []; }
         const installed = await listInstalledSimulatorApps(config.simulatorUdid);
+        // Both halves of the dev/production pair are expected, whichever way the toggle currently sits.
+        const expected = new Set([pbxBundleId, effectiveBundleId(pbxBundleId, true)]);
         // Match on CFBundleName (defaults to the Xcode product name and is
         // rarely customized). CFBundleDisplayName isn't reliable because
         // users often override it independently of the product name, so a
         // displayName mismatch doesn't mean different app.
         return installed.filter((app) =>
-            app.bundleId !== pbxBundleId && app.bundleName === productName
+            !expected.has(app.bundleId) && app.bundleName === productName
         );
     }
 

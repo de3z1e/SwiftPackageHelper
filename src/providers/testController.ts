@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import type { BuildTaskConfig } from '../types/interfaces';
 import { parseNativeTargets, isTestTarget } from '../parsers/targets';
 import { determineTargetPath } from '../utils/path';
+import { devBundleIdOverrideArgs } from '../utils/bundleId';
 import { derivedDataBasePath, derivedDataShellPathForScheme, getDestinationType, xcodebuildDestinationFlags } from '../utils/destination';
 
 const execFile = promisify(cp.execFile);
@@ -353,6 +354,8 @@ export class XCTestController implements vscode.Disposable {
             '-configuration Debug',
             ...xcodebuildDestinationFlags(config),
             `-derivedDataPath "${derivedData}"`,
+            // A test run installs the same host app, so it must resolve to the same bundle id a build does.
+            ...devBundleIdOverrideArgs(config),
         ].join(' ');
     }
 

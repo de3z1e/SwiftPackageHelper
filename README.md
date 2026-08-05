@@ -19,8 +19,12 @@ The extension adds a panel to the Activity Bar with configurable build settings:
 - **Project** — select which `.xcodeproj` to use (when multiple exist)
 - **Target** — select the build target
 - **Scheme** — select the build scheme
-- **Bundle ID** — read directly from `project.pbxproj`; click to edit (writes `PRODUCT_BUNDLE_IDENTIFIER` back to pbxproj). Shows a ⚠ warning when an app with the same product name but a different bundle id is installed on the selected simulator — usually a leftover from a previous rename. Use the row's trash action to uninstall the orphan.
+- **Bundle ID** — read directly from `project.pbxproj`; click to edit (writes `PRODUCT_BUNDLE_IDENTIFIER` back to pbxproj). The row shows the id a build actually produces, followed by the **Dev: On/Off** state, and carries an inline toggle button on the right (hover the row) — `○` turns dev mode on, `✓` turns it off. Also shows a ⚠ warning when an app with the same product name but a different bundle id is installed on the selected simulator — usually a leftover from a previous rename. Use the row's trash action to uninstall the orphan.
 - **Device** — select **My Mac**, a connected physical device (USB or Wi-Fi), or an available iOS simulator (My Mac appears only for macOS-capable targets)
+
+**Dev Bundle ID** appends `-dev` to the bundle id at build time (`com.example.MyApp` → `com.example.MyApp-dev`), so development builds install alongside the App Store build instead of replacing it. It's an `xcodebuild` setting override (`PRODUCT_BUNDLE_IDENTIFIER=$(inherited)-dev`) — `project.pbxproj` is never modified, so the shipping bundle id stays exactly as committed, and the suffix follows any later rename automatically. The dev and production apps are treated as an expected pair, never flagged as orphans of each other.
+
+> **Note:** the suffix applies to every target the scheme builds. Projects with embedded app extensions (whose bundle ids must stay prefixed by the host app's) will be warned once, as those targets may fail to build or install. On physical devices the new id needs provisioning — automatic signing handles it via `-allowProvisioningUpdates`; manual profiles must cover the `-dev` id.
 
 Title bar actions: **Build**, **Build & Run**, **Refresh**, **Sync Files**, and **Clean DerivedData** (deletes the current scheme's build cache — or all schemes — and reports the disk space reclaimed).
 
@@ -95,7 +99,7 @@ Working with an AI coding assistant in a Swift project that uses VSXcode? Point 
 ### Installation
 
 - Install from the VS Code Marketplace (search for `VSXcode`).
-- Install the bundled package directly: `code --install-extension vsxcode-3.6.5.vsix`.
+- Install the bundled package directly: `code --install-extension vsxcode-3.7.0.vsix`.
 - VS Code UI alternative: **Extensions → … → Install from VSIX…** and pick the packaged file.
 
 #### Build from source
@@ -103,5 +107,5 @@ Working with an AI coding assistant in a Swift project that uses VSXcode? Point 
 ```bash
 npm install              # install dev dependencies
 npm run package          # runs tsc build and produces vsxcode-<version>.vsix
-code --install-extension vsxcode-3.6.5.vsix
+code --install-extension vsxcode-3.7.0.vsix
 ```

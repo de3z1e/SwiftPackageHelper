@@ -1,4 +1,5 @@
 import type { BuildTaskConfig } from '../types/interfaces';
+import { devBundleIdOverrideArgs } from '../utils/bundleId';
 import { derivedDataShellPathForScheme, getDestinationType, productDirForDestination, xcodebuildDestinationFlags } from '../utils/destination';
 
 function xcodebuildArgs(config: BuildTaskConfig): string[] {
@@ -10,6 +11,7 @@ function xcodebuildArgs(config: BuildTaskConfig): string[] {
         '-configuration Debug',
         ...xcodebuildDestinationFlags(config),
         `-derivedDataPath "${derivedData}"`,
+        ...devBundleIdOverrideArgs(config),
     ];
 }
 

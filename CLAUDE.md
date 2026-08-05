@@ -41,7 +41,7 @@ Also contains inline helpers: `parseDefaultLocalization`, `parseDeploymentTarget
 | `vsxcode.createFromXcodeproj` | Generate Package.swift (Debug config) |
 | `vsxcode.createFromXcodeprojWithOptions` | Generate Package.swift (QuickPick config selection) |
 | `vsxcode.generateBuildTasks` | Interactive build task configuration |
-| `vsxcode.sidebar.*` | 10 sidebar commands: changeProject, changeTarget, changeScheme, changeBundleId, selectSimulator, changeSwiftVersion, changeStrictConcurrency, build, buildAndRun, refresh |
+| `vsxcode.sidebar.*` | 15 sidebar commands: changeProject, changeTarget, changeScheme, changeBundleId, toggleDevBundleId (+ enableDevBundleId/disableDevBundleId inline wrappers), uninstallStaleAppsOnSimulator, selectSimulator, changeSwiftVersion, changeStrictConcurrency, build, buildAndRun, refresh, cleanDerivedData |
 
 ### Module Map
 

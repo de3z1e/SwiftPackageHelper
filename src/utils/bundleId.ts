@@ -5,11 +5,40 @@ import * as path from 'path';
 import { getBuildSettingsForTarget, getProjectBuildSettings } from '../parsers/buildSettings';
 import { parseNativeTargets } from '../parsers/targets';
 import { isXcodeFirstLaunchComplete } from './version';
+import type { BuildTaskConfig } from '../types/interfaces';
 
 const execFile = promisify(execFileCallback);
 const exec = promisify(execCallback);
 
 export type BundleIdSource = 'info-plist' | 'pbxproj';
+
+// ── Dev Bundle ID mode ───────────────────────────────────────────
+
+/** Appended to PRODUCT_BUNDLE_IDENTIFIER while Dev Bundle ID is enabled. */
+export const DEV_BUNDLE_ID_SUFFIX = '-dev';
+
+/**
+ * xcodebuild override suffixing whatever PRODUCT_BUNDLE_IDENTIFIER each target
+ * resolves to, expanded at build time so nothing needs caching. The single
+ * quotes are load-bearing: `zsh -c` would treat `$(inherited)` as a command
+ * substitution.
+ */
+export function devBundleIdOverrideArgs(config: BuildTaskConfig): string[] {
+    if (!config.devBundleId) { return []; }
+    return [`'PRODUCT_BUNDLE_IDENTIFIER=$(inherited)${DEV_BUNDLE_ID_SUFFIX}'`];
+}
+
+/** The bundle id a build produces for a pbxproj value under the active mode. */
+export function effectiveBundleId(baseBundleId: string, devBundleId?: boolean): string {
+    return devBundleId ? `${baseBundleId}${DEV_BUNDLE_ID_SUFFIX}` : baseBundleId;
+}
+
+/** The dev/production counterpart of a bundle id — a deliberate pair, never an orphan of each other. */
+export function counterpartBundleId(bundleId: string): string {
+    return bundleId.endsWith(DEV_BUNDLE_ID_SUFFIX)
+        ? bundleId.slice(0, -DEV_BUNDLE_ID_SUFFIX.length)
+        : `${bundleId}${DEV_BUNDLE_ID_SUFFIX}`;
+}
 
 export interface ResolvedBundleId {
     bundleId: string;
@@ -68,11 +97,13 @@ export async function resolveBundleIdForLaunch(opts: {
     pbxprojPath?: string;
     targetName?: string;
     configurationName?: string;
+    devBundleId?: boolean;
 }): Promise<ResolvedBundleId | undefined> {
     if (opts.appPath) {
         const infoPlist = path.join(opts.appPath, 'Info.plist');
         const fromPlist = await readInfoPlistBundleId(infoPlist);
         if (fromPlist) {
+            // Already the built value, suffix included — never re-apply it.
             return { bundleId: fromPlist, source: 'info-plist' };
         }
     }
@@ -83,7 +114,9 @@ export async function resolveBundleIdForLaunch(opts: {
             opts.configurationName || 'Debug',
         );
         if (fromPbx) {
-            return { bundleId: fromPbx, source: 'pbxproj' };
+            // Raw pbxproj value: dev mode's suffix lives only in the build
+            // override, so apply it here to match what a build would install.
+            return { bundleId: effectiveBundleId(fromPbx, opts.devBundleId), source: 'pbxproj' };
         }
     }
     return undefined;

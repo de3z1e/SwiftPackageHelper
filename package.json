@@ -2,7 +2,7 @@
     "name": "vsxcode",
     "displayName": "VSXcode",
     "description": "Xcode project integration for VS Code — IntelliSense, build tasks, device/simulator debugging, and native swift-format code formatting.",
-    "version": "3.6.5",
+    "version": "3.7.0",
     "publisher": "de3z1e",
     "icon": "images/icon.png",
     "license": "MIT",
@@ -109,6 +109,20 @@
                 "title": "Change Bundle Identifier"
             },
             {
+                "command": "vsxcode.sidebar.toggleDevBundleId",
+                "title": "Toggle Dev Bundle ID"
+            },
+            {
+                "command": "vsxcode.sidebar.enableDevBundleId",
+                "title": "Turn On Dev Bundle ID (-dev)",
+                "icon": "$(circle-large-outline)"
+            },
+            {
+                "command": "vsxcode.sidebar.disableDevBundleId",
+                "title": "Turn Off Dev Bundle ID (-dev)",
+                "icon": "$(pass-filled)"
+            },
+            {
                 "command": "vsxcode.sidebar.uninstallStaleAppsOnSimulator",
                 "title": "Uninstall Stale Apps on Simulator",
                 "icon": "$(trash)"
@@ -182,8 +196,28 @@
             "view/item/context": [
                 {
                     "command": "vsxcode.sidebar.uninstallStaleAppsOnSimulator",
-                    "when": "view == vsxcode.sidebar && viewItem == config-bundleId-stale",
-                    "group": "inline"
+                    "when": "view == vsxcode.sidebar && viewItem =~ /^config-bundleId-stale/",
+                    "group": "inline@1"
+                },
+                {
+                    "command": "vsxcode.sidebar.enableDevBundleId",
+                    "when": "view == vsxcode.sidebar && viewItem =~ /^config-bundleId.*-devOff$/",
+                    "group": "inline@2"
+                },
+                {
+                    "command": "vsxcode.sidebar.disableDevBundleId",
+                    "when": "view == vsxcode.sidebar && viewItem =~ /^config-bundleId.*-devOn$/",
+                    "group": "inline@2"
+                }
+            ],
+            "commandPalette": [
+                {
+                    "command": "vsxcode.sidebar.enableDevBundleId",
+                    "when": "false"
+                },
+                {
+                    "command": "vsxcode.sidebar.disableDevBundleId",
+                    "when": "false"
                 }
             ]
         },

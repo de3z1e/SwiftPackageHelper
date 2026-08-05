@@ -158,6 +158,9 @@ export interface BuildTaskConfig {
     // Authoritative destination discriminator. When absent (legacy stored
     // configs), derive via getDestinationType() from isPhysicalDevice.
     destinationType?: DestinationType;
+    // Build-time only: suffixes PRODUCT_BUNDLE_IDENTIFIER via an xcodebuild
+    // override so the dev app installs beside the shipping one. Never writes pbxproj.
+    devBundleId?: boolean;
 }
 
 export interface SwiftFormatConfig {

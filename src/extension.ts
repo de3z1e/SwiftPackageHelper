@@ -45,6 +45,9 @@ import {
     formatMtime,
     readInfoPlistDisplayNames,
     readInfoPlistExecutable,
+    effectiveBundleId,
+    counterpartBundleId,
+    DEV_BUNDLE_ID_SUFFIX,
 } from './utils/bundleId';
 import type { BuildTaskConfig, DestinationType } from './types/interfaces';
 
@@ -662,6 +665,10 @@ async function configureBuildTasks(rootPath: string, workspaceState: vscode.Meme
         isPhysicalDevice: simulatorPick.destinationType === 'device',
         deviceIdentifier: simulatorPick.deviceIdentifier,
         destinationType: simulatorPick.destinationType,
+        // The wizard picks project/target/scheme/device; dev mode isn't one of
+        // its prompts, so carry it over rather than silently reverting builds
+        // to the shipping bundle id.
+        devBundleId: workspaceState.get<BuildTaskConfig>('buildTaskConfig')?.devBundleId,
     };
 
     await workspaceState.update('buildTaskConfig', buildTaskConfig);
@@ -805,26 +812,29 @@ async function handlePossibleBundleIdRename(
     const renameKey = `${previous}→${fromPbx}`;
     if (lastRenameNotifiedFor === renameKey) { return false; }
     lastRenameNotifiedFor = renameKey;
+    // What the rename actually left installed is the effective (possibly suffixed) id, not the raw pbxproj value.
+    const previousInstalled = effectiveBundleId(previous, config.devBundleId);
+    const currentInstalled = effectiveBundleId(fromPbx, config.devBundleId);
     const dismissed = workspaceState.get<string[]>(DISMISSED_STALE_INSTALL_WARNINGS_KEY, []);
-    if (dismissed.includes(previous)) {
-        log(`[pbxproj-watcher] rename "${previous}" → "${fromPbx}" detected, but the uninstall warning for ${previous} was dismissed — skipping prompt`);
+    if (dismissed.includes(previousInstalled)) {
+        log(`[pbxproj-watcher] rename "${previous}" → "${fromPbx}" detected, but the uninstall warning for ${previousInstalled} was dismissed — skipping prompt`);
         return false;
     }
 
     log(`[pbxproj-watcher] bundle id rename detected: "${previous}" → "${fromPbx}"`);
     const destination = config.isPhysicalDevice ? 'device' : 'simulator';
     const choice = await vscode.window.showWarningMessage(
-        `Bundle id changed: ${previous} → ${fromPbx}. The previous install may linger on your ${destination} and appear as a duplicate icon. Uninstall it?`,
+        `Bundle id changed: ${previousInstalled} → ${currentInstalled}. The previous install may linger on your ${destination} and appear as a duplicate icon. Uninstall it?`,
         'Uninstall',
         'Keep',
         "Don't Ask Again",
     );
     if (choice === "Don't Ask Again") {
-        log(`[pbxproj-watcher] suppressing uninstall warning for ${previous}`);
+        log(`[pbxproj-watcher] suppressing uninstall warning for ${previousInstalled}`);
         // Re-read: a concurrent prompt may have added its id since the snapshot above.
         const latest = workspaceState.get<string[]>(DISMISSED_STALE_INSTALL_WARNINGS_KEY, []);
-        if (!latest.includes(previous)) {
-            await workspaceState.update(DISMISSED_STALE_INSTALL_WARNINGS_KEY, [...latest, previous]);
+        if (!latest.includes(previousInstalled)) {
+            await workspaceState.update(DISMISSED_STALE_INSTALL_WARNINGS_KEY, [...latest, previousInstalled]);
         }
         return false;
     }
@@ -840,16 +850,16 @@ async function handlePossibleBundleIdRename(
     const cp = await import('child_process');
     let didUninstall = false;
     if (config.simulatorUdid && !config.isPhysicalDevice) {
-        log(`[pbxproj-watcher] uninstalling "${previous}" from simulator ${config.simulatorUdid}`);
+        log(`[pbxproj-watcher] uninstalling "${previousInstalled}" from simulator ${config.simulatorUdid}`);
         await new Promise<void>((resolve) => {
-            cp.exec(`xcrun simctl uninstall "${config.simulatorUdid}" "${previous}"`, () => resolve());
+            cp.exec(`xcrun simctl uninstall "${config.simulatorUdid}" "${previousInstalled}"`, () => resolve());
         });
         didUninstall = true;
     }
     if (config.deviceIdentifier && config.isPhysicalDevice) {
-        log(`[pbxproj-watcher] uninstalling "${previous}" from device ${config.deviceIdentifier}`);
+        log(`[pbxproj-watcher] uninstalling "${previousInstalled}" from device ${config.deviceIdentifier}`);
         await new Promise<void>((resolve) => {
-            cp.exec(`xcrun devicectl device uninstall app --device "${config.deviceIdentifier}" "${previous}"`, () => resolve());
+            cp.exec(`xcrun devicectl device uninstall app --device "${config.deviceIdentifier}" "${previousInstalled}"`, () => resolve());
         });
         didUninstall = true;
     }
@@ -873,8 +883,10 @@ async function offerSimulatorTwinUninstall(
     const productName = newNames.name;
     if (!productName) { return false; }
     const installed = await listInstalledSimulatorApps(udid);
+    // The dev/production counterpart is a deliberate side-by-side install, never an orphan.
+    const sibling = counterpartBundleId(newBundleId);
     const twin = installed.find((app) =>
-        app.bundleId !== newBundleId && app.bundleName === productName
+        app.bundleId !== newBundleId && app.bundleId !== sibling && app.bundleName === productName
     );
     if (!twin) { return false; }
     const dismissed = workspaceState.get<string[]>(DISMISSED_STALE_INSTALL_WARNINGS_KEY, []);
@@ -1244,6 +1256,57 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     );
 
+    // The suffix hits every target, so an extension's id no longer nests inside its
+    // host's — warn once instead of letting it surface as a signing failure.
+    const DEV_BUNDLE_ID_EXTENSION_NOTICE_KEY = 'devBundleIdExtensionNoticeShown';
+    async function warnIfProjectHasExtensions(): Promise<void> {
+        if (context.workspaceState.get<boolean>(DEV_BUNDLE_ID_EXTENSION_NOTICE_KEY)) { return; }
+        const targets = sidebarProvider.getProjectData()?.targets || [];
+        // watchapp2 is an embedded *application*, not an extension, but carries
+        // the same host-prefix requirement.
+        const embedded = targets.filter((t) =>
+            t.productType.includes('extension') ||
+            t.productType.includes('watchkit') ||
+            t.productType.includes('watchapp')
+        );
+        if (embedded.length === 0) { return; }
+        await context.workspaceState.update(DEV_BUNDLE_ID_EXTENSION_NOTICE_KEY, true);
+        const names = embedded.map((t) => t.name).join(', ');
+        vscode.window.showWarningMessage(
+            `Dev Bundle ID appends "${DEV_BUNDLE_ID_SUFFIX}" to every target in the scheme, including embedded targets (${names}). Their bundle ids must stay prefixed by the app's, so those targets may fail to build or install.`
+        );
+    }
+
+    const toggleDevBundleIdCmd = vscode.commands.registerCommand(
+        'vsxcode.sidebar.toggleDevBundleId',
+        async (enabled?: boolean) => {
+            const config = context.workspaceState.get<BuildTaskConfig>('buildTaskConfig');
+            if (!config) { return; }
+            const current = config.devBundleId === true;
+            // An explicit argument makes a stale render unable to invert the result; bare invocations flip.
+            const next = typeof enabled === 'boolean' ? enabled : !current;
+            if (next === current) { return; }
+            await context.workspaceState.update('buildTaskConfig', { ...config, devBundleId: next });
+            // Redraw, not reload — no cached project data is keyed on this flag.
+            sidebarProvider.notifyConfigChanged();
+            const base = sidebarProvider.getProjectData()?.bundleIdByTarget[config.targetName];
+            const built = base ? effectiveBundleId(base, next) : `(from pbxproj)${next ? DEV_BUNDLE_ID_SUFFIX : ''}`;
+            log(`[dev-bundle-id] ${next ? 'enabled' : 'disabled'} — builds install as ${built}`);
+            if (next) { await warnIfProjectHasExtensions(); }
+        }
+    );
+
+    // An inline slot binds an icon to a command, not to a state, so the toggle needs
+    // two commands whose `when` clauses select on the row's contextValue.
+    const enableDevBundleIdCmd = vscode.commands.registerCommand(
+        'vsxcode.sidebar.enableDevBundleId',
+        () => vscode.commands.executeCommand('vsxcode.sidebar.toggleDevBundleId', true),
+    );
+    const disableDevBundleIdCmd = vscode.commands.registerCommand(
+        'vsxcode.sidebar.disableDevBundleId',
+        () => vscode.commands.executeCommand('vsxcode.sidebar.toggleDevBundleId', false),
+    );
+
     const uninstallStaleAppsCmd = vscode.commands.registerCommand(
         'vsxcode.sidebar.uninstallStaleAppsOnSimulator',
         async () => {
@@ -1536,6 +1599,7 @@ export function activate(context: vscode.ExtensionContext): void {
             appPath,
             pbxprojPath: path.join(projectRoot, config.projectFile, 'project.pbxproj'),
             targetName: config.targetName,
+            devBundleId: config.devBundleId,
         });
         if (!resolved) {
             log('[simulator-debug] ERROR: could not resolve bundle id (no Info.plist, no pbxproj)');
@@ -1735,6 +1799,7 @@ export function activate(context: vscode.ExtensionContext): void {
             appPath,
             pbxprojPath: path.join(projectRoot, config.projectFile, 'project.pbxproj'),
             targetName: config.targetName,
+            devBundleId: config.devBundleId,
         });
         if (!resolved) {
             log('[physical-debug] ERROR: could not resolve bundle id (no Info.plist, no pbxproj)');
@@ -2204,6 +2269,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 appPath,
                 pbxprojPath: path.join(projectRoot, config.projectFile, 'project.pbxproj'),
                 targetName: config.targetName,
+                devBundleId: config.devBundleId,
             });
             if (resolved) {
                 const cp = await import('child_process');
@@ -2233,7 +2299,8 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         generateCommand, generateWithOptionsCommand, generateBuildTasksCommand,
         taskProvider, debugProvider, treeView, testController,
-        changeProjectCmd, changeTargetCmd, changeSchemeCmd, changeBundleIdCmd, uninstallStaleAppsCmd,
+        changeProjectCmd, changeTargetCmd, changeSchemeCmd, changeBundleIdCmd,
+        toggleDevBundleIdCmd, enableDevBundleIdCmd, disableDevBundleIdCmd, uninstallStaleAppsCmd,
         selectSimulatorCmd, changeSwiftVersionCmd, changeStrictConcurrencyCmd, buildCmd, buildAndRunCmd, refreshCmd,
         cleanDerivedDataCmd,
         watcher, onProjectChange, dyldTracker, onDebugStart, onDebugEnd,
