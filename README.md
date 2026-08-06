@@ -99,7 +99,7 @@ Working with an AI coding assistant in a Swift project that uses VSXcode? Point 
 ### Installation
 
 - Install from the VS Code Marketplace (search for `VSXcode`).
-- Install the bundled package directly: `code --install-extension vsxcode-3.7.0.vsix`.
+- Install the bundled package directly: `code --install-extension vsxcode-3.7.1.vsix`.
 - VS Code UI alternative: **Extensions → … → Install from VSIX…** and pick the packaged file.
 
 #### Build from source
@@ -107,5 +107,5 @@ Working with an AI coding assistant in a Swift project that uses VSXcode? Point 
 ```bash
 npm install              # install dev dependencies
 npm run package          # runs tsc build and produces vsxcode-<version>.vsix
-code --install-extension vsxcode-3.7.0.vsix
+code --install-extension vsxcode-3.7.1.vsix
 ```

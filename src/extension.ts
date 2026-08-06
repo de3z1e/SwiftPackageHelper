@@ -25,7 +25,8 @@ import { parseResourcesForTarget, scanForUnhandledFiles } from './parsers/resour
 import { generateSwiftSettings } from './generators/swiftSettings';
 import { generateLinkerSettings } from './generators/linkerSettings';
 import { buildPackageSwift, formatPackageDependencyEntry } from './generators/packageSwift';
-import { listAvailableSimulators, listPhysicalDevices, devicectlInstall, checkDeviceReady, findDeviceSymbols, getMyMacDestination } from './utils/simulator';
+import { listAvailableSimulators, listPhysicalDevices, devicectlInstall, checkDeviceReady, findDeviceSymbols, getMyMacDestination, listSimulatorAppProcesses, waitForNewSimulatorAppProcess } from './utils/simulator';
+import type { SimulatorAppQuery, SimulatorAppProcess } from './utils/simulator';
 import { getDestinationType, builtAppPath, derivedDataBasePath } from './utils/destination';
 import { XcodeBuildTaskProvider, TASK_TYPE } from './providers/taskProvider';
 import { XcodeDebugConfigProvider } from './providers/debugConfigProvider';
@@ -1641,28 +1642,29 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         log(`[simulator-debug] launching ${bundleId}`);
 
-        // 3. Start debugger first so it's watching before the app process appears.
-        //    --include-existing handles the race where simctl creates the process
-        //    before lldb begins polling (same pattern as physical-device flow).
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder) {
             vscode.window.showErrorMessage('No workspace folder found.');
             return;
         }
 
-        const debugConfig: vscode.DebugConfiguration = {
-            type: 'lldb-dap',
-            request: 'attach',
-            name: `Debug ${config.productName}`,
-            stopOnEntry: false,
-            attachCommands: [
-                `process attach --name ${config.productName} --waitfor --include-existing`,
-            ]
+        // 3. Snapshot processes already alive, so the pid attached to afterwards is
+        //    provably the one this run launched rather than a leftover.
+        const processQuery: SimulatorAppQuery = {
+            udid,
+            productName: config.productName,
+            executablePath: mtimeInfo?.executablePath,
         };
-        log('[simulator-debug] starting debug session...');
-        const debugStarted = vscode.debug.startDebugging(folder, debugConfig);
+        const preLaunchPids = new Set(
+            (await listSimulatorAppProcesses(processQuery)).map((p) => p.pid)
+        );
+        if (preLaunchPids.size > 0) {
+            log(`[simulator-debug] ${preLaunchPids.size} pre-existing process(es) on this simulator will be ignored: ${[...preLaunchPids].join(', ')}`);
+        }
+        if (runId !== currentRunId) return;
 
-        // 4. Launch app with console streaming via task (debugger is already watching)
+        // 4. Launch app with console streaming via task. --wait-for-debugger leaves
+        //    the process suspended indefinitely, so attaching after launch is safe.
         const allTasks = await vscode.tasks.fetchTasks();
         const launchTask = allTasks.find((t) => t.name === 'Run and Debug');
         if (!launchTask) {
@@ -1673,7 +1675,46 @@ export function activate(context: vscode.ExtensionContext): void {
         consoleExecution = await vscode.tasks.executeTask(launchTask);
         if (runId !== currentRunId) return;
 
-        const started = await debugStarted;
+        // 5. Wait for the suspended process, racing the console task so a failed
+        //    launch surfaces immediately instead of burning the whole timeout.
+        const abortOnConsoleExit = new AbortController();
+        const consoleExitListener = vscode.tasks.onDidEndTaskProcess((event) => {
+            if (event.execution.task.name === launchTask.name) { abortOnConsoleExit.abort(); }
+        });
+        let appProcess: SimulatorAppProcess | undefined;
+        try {
+            appProcess = await waitForNewSimulatorAppProcess(processQuery, preLaunchPids, {
+                signal: abortOnConsoleExit.signal,
+            });
+        } finally {
+            consoleExitListener.dispose();
+        }
+        if (runId !== currentRunId) return;
+        if (!appProcess) {
+            const reason = abortOnConsoleExit.signal.aborted
+                ? 'console task exited before the app process appeared'
+                : 'timed out waiting for the app process';
+            log(`[simulator-debug] ERROR: ${reason}`);
+            buildTaskProvider.writeToConsole('\r\n\x1b[31m** APP LAUNCH FAILED **\x1b[0m\r\n\r\n');
+            consoleExecution?.terminate();
+            consoleExecution = undefined;
+            return;
+        }
+        log(`[simulator-debug] app process pid ${appProcess.pid} (stat ${appProcess.stat})`);
+
+        // 6. Attach to that exact pid.
+        const debugConfig: vscode.DebugConfiguration = {
+            type: 'lldb-dap',
+            request: 'attach',
+            name: `Debug ${config.productName}`,
+            stopOnEntry: false,
+            attachCommands: [
+                `process attach --pid ${appProcess.pid}`,
+            ]
+        };
+        log('[simulator-debug] starting debug session...');
+        const started = await vscode.debug.startDebugging(folder, debugConfig);
+        if (runId !== currentRunId) return;
         if (!started) {
             log('[simulator-debug] debug session failed to start');
             buildTaskProvider.writeToConsole('\r\n\x1b[31m** APP LAUNCH FAILED **\x1b[0m\r\n\r\n');

@@ -197,6 +197,112 @@ export async function listPhysicalDevices(): Promise<PhysicalDevice[]> {
     }
 }
 
+export interface SimulatorAppProcess {
+    pid: number;
+    /** Raw ps STAT field, e.g. "Ts" (stopped) or "SXs" (traced). */
+    stat: string;
+}
+
+/**
+ * A simulator app is an ordinary host process, so matching by executable *name*
+ * would also hit that app on any other booted simulator. Both forms below stay
+ * device-scoped because simulator bundle paths embed the device UDID.
+ */
+export interface SimulatorAppQuery {
+    udid: string;
+    productName: string;
+    /** Exact executable path when known — strictest match. */
+    executablePath?: string;
+}
+
+function matchesSimulatorApp(command: string, query: SimulatorAppQuery): boolean {
+    // Device scope gates every form, so no widening below can ever reach another
+    // simulator. Bundle paths look like .../Devices/<udid>/data/.../<Product>.app.
+    if (!command.includes(`/${query.udid}/`)) { return false; }
+    if (query.executablePath
+        && (command === query.executablePath || command.startsWith(`${query.executablePath} `))) {
+        return true;
+    }
+    // Union rather than either/or: if get_app_container ever reported a path that
+    // didn't match argv[0], an exclusive branch would silently burn the whole
+    // timeout waiting for a match that can never arrive.
+    // Locate the suffix rather than splitting on spaces — a product name may
+    // contain them, and argv beyond argv[0] may follow.
+    const suffix = `/${query.productName}.app/${query.productName}`;
+    const at = command.indexOf(suffix);
+    if (at < 0) { return false; }
+    const after = at + suffix.length;
+    return after === command.length || command[after] === ' ';
+}
+
+export async function listSimulatorAppProcesses(query: SimulatorAppQuery): Promise<SimulatorAppProcess[]> {
+    let stdout: string;
+    try {
+        ({ stdout } = await execFile(
+            'ps',
+            ['-Ao', 'pid=,stat=,command='],
+            { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+        ));
+    } catch {
+        return [];
+    }
+    const processes: SimulatorAppProcess[] = [];
+    for (const line of stdout.split('\n')) {
+        const match = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+        if (!match) { continue; }
+        const [, pid, stat, command] = match;
+        if (matchesSimulatorApp(command, query)) {
+            processes.push({ pid: Number(pid), stat });
+        }
+    }
+    return processes;
+}
+
+/**
+ * Polling cannot miss the process because `simctl launch --wait-for-debugger`
+ * leaves it suspended indefinitely. `excludePids` is what disambiguates a stopped
+ * same-device orphan, which `simctl terminate` cannot reap (SIGTERM stays pending).
+ */
+export async function waitForNewSimulatorAppProcess(
+    query: SimulatorAppQuery,
+    excludePids: ReadonlySet<number>,
+    options: { timeoutMs?: number; intervalMs?: number; signal?: AbortSignal } = {},
+): Promise<SimulatorAppProcess | undefined> {
+    const timeoutMs = options.timeoutMs ?? 60000;
+    const intervalMs = options.intervalMs ?? 150;
+    const deadline = Date.now() + timeoutMs;
+    // Each poll forks a full `ps -A`; widen the gap so a cold boot that takes the
+    // whole timeout costs ~70 of them rather than ~400. The sleep is abort-aware,
+    // so a longer gap never delays cancellation.
+    let delayMs = intervalMs;
+    while (Date.now() < deadline) {
+        if (options.signal?.aborted) { return undefined; }
+        const candidates = (await listSimulatorAppProcesses(query))
+            .filter((p) => !excludePids.has(p.pid));
+        if (candidates.length > 0) {
+            // A stopped process is the one waiting for us; prefer it if several match.
+            return candidates.find((p) => p.stat.startsWith('T')) ?? candidates[0];
+        }
+        await sleepUntilAborted(delayMs, options.signal);
+        delayMs = Math.min(delayMs * 1.5, 1000);
+    }
+    return undefined;
+}
+
+function sleepUntilAborted(ms: number, signal?: AbortSignal): Promise<void> {
+    // An already-aborted signal never fires the event, so check before waiting.
+    if (signal?.aborted) { return Promise.resolve(); }
+    return new Promise<void>((resolve) => {
+        const finish = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', finish);
+            resolve();
+        };
+        const timer = setTimeout(finish, ms);
+        signal?.addEventListener('abort', finish, { once: true });
+    });
+}
+
 /**
  * Check if Xcode has cached device symbols for the given physical device.
  * Xcode stores extracted shared cache symbols in:
