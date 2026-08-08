@@ -2357,6 +2357,15 @@ export function activate(context: vscode.ExtensionContext): void {
         log(`[run-and-debug] ${session.name} — debugger active on ${target}`);
     });
 
+    // Terminating a finished task logs "Task to terminate not found", so drop
+    // handles as they end. Match on identity, never name: a killed task's end
+    // event can land after the next same-named execution is stored, and clearing
+    // that live handle would leave it unterminatable.
+    const onTaskEnd = vscode.tasks.onDidEndTask((event) => {
+        if (event.execution === buildExecution) { buildExecution = undefined; }
+        if (event.execution === consoleExecution) { consoleExecution = undefined; }
+    });
+
     // ── Register all disposables ──────────────────────────────
 
     context.subscriptions.push(
@@ -2366,7 +2375,7 @@ export function activate(context: vscode.ExtensionContext): void {
         toggleDevBundleIdCmd, enableDevBundleIdCmd, disableDevBundleIdCmd, uninstallStaleAppsCmd,
         selectSimulatorCmd, changeSwiftVersionCmd, changeStrictConcurrencyCmd, buildCmd, buildAndRunCmd, refreshCmd,
         cleanDerivedDataCmd,
-        watcher, onProjectChange, dyldTracker, onDebugStart, onDebugEnd,
+        watcher, onProjectChange, dyldTracker, onDebugStart, onDebugEnd, onTaskEnd,
         outputChannel
     );
 
