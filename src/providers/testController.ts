@@ -8,6 +8,7 @@ import { parseNativeTargets, isTestTarget } from '../parsers/targets';
 import { determineTargetPath } from '../utils/path';
 import { devBundleIdOverrideArgs } from '../utils/bundleId';
 import { derivedDataBasePath, derivedDataShellPathForScheme, getDestinationType, xcodebuildDestinationFlags } from '../utils/destination';
+import { listSimulatorAppProcesses, waitForNewSimulatorAppProcess } from '../utils/simulator';
 
 const execFile = promisify(cp.execFile);
 const DERIVED_DATA_BASE = derivedDataBasePath();
@@ -309,15 +310,55 @@ export class XCTestController implements vscode.Disposable {
         const testCmd = `${buildCmd} test-without-building ${filterArgs} 2>&1`;
         const folder = vscode.workspace.workspaceFolders?.[0];
 
-        // Start the debug session (fire-and-forget — lldb --waitfor blocks until
-        // the test host process appears, so we must start tests concurrently)
-        // macOS test hosts run natively; the attach-by-name path is iOS-shaped,
-        // so run mac tests (with coverage) without a debugger attached.
-        if (folder && getDestinationType(config) !== 'mac') {
+        // Attach by pid, scoped to the target device: a simulator app is an ordinary
+        // host process, so `--name` would match the same app on another booted simulator.
+        // Nothing suspends the test host (xcodebuild owns the launch), so poll for the
+        // new pid and rely on XCTest init idling long enough for the attach to land.
+        const attachAbort = new AbortController();
+        let attachDone: Promise<void> | undefined;
+        // Capture the session this run's attach starts, so the post-test stop can
+        // reap exactly that session — stopDebugging() with no argument stops ALL
+        // sessions, and a run whose attach never happened must not tear down
+        // unrelated debugging.
+        const testSessionName = `Debug Tests (${config.productName})`;
+        let testSession: vscode.DebugSession | undefined;
+        const sessionCapture = vscode.debug.onDidStartDebugSession((session) => {
+            if (!testSession && session.name === testSessionName) {
+                testSession = session;
+            }
+        });
+        if (folder && getDestinationType(config) === 'simulator') {
+            const udid = config.simulatorUdid || config.simulatorDevice;
+            const query = { udid, productName: config.productName };
+            const preLaunchPids = new Set(
+                (await listSimulatorAppProcesses(query)).map((p) => p.pid)
+            );
+            attachDone = (async () => {
+                // xcodebuild may stage for minutes before launching the host; the abort ends the poll as soon as tests finish.
+                const proc = await waitForNewSimulatorAppProcess(query, preLaunchPids, {
+                    timeoutMs: 600000,
+                    signal: attachAbort.signal,
+                });
+                if (!proc || token.isCancellationRequested) { return; }
+                const debugConfig: vscode.DebugConfiguration = {
+                    type: 'lldb-dap',
+                    request: 'attach',
+                    name: testSessionName,
+                    stopOnEntry: false,
+                    attachCommands: [
+                        `process attach --pid ${proc.pid}`,
+                    ]
+                };
+                try {
+                    await vscode.debug.startDebugging(folder, debugConfig);
+                } catch { /* surfaced by VS Code; tests keep running undebugged */ }
+            })();
+        } else if (folder && getDestinationType(config) !== 'mac') {
+            // A host-side ps poll cannot see on-device processes, so devices keep the name+waitfor attach.
             const debugConfig: vscode.DebugConfiguration = {
                 type: 'lldb-dap',
                 request: 'attach',
-                name: `Debug Tests (${config.productName})`,
+                name: testSessionName,
                 stopOnEntry: false,
                 attachCommands: [
                     `process attach --name ${config.productName} --waitfor --include-existing`,
@@ -326,9 +367,14 @@ export class XCTestController implements vscode.Disposable {
             vscode.debug.startDebugging(folder, debugConfig);
         }
 
-        // Run test-without-building (this launches the app, lldb catches it)
+        // Run test-without-building (this launches the app, the attach catches it)
         const leafItems = this.collectLeafItems(itemsToRun);
         const reportedItems = await this.executeAndParse(run, testCmd, token);
+
+        // Let an in-flight attach settle so the stop below sees a registered session.
+        attachAbort.abort();
+        if (attachDone) { await attachDone; }
+        sessionCapture.dispose();
 
         for (const item of leafItems) {
             if (!reportedItems.has(item.id)) {
@@ -336,10 +382,10 @@ export class XCTestController implements vscode.Disposable {
             }
         }
 
-        // Stop the debug session after tests complete. mac test runs start no
-        // session (the attach path is iOS-only), so don't stop an unrelated one.
-        if (getDestinationType(config) !== 'mac' && vscode.debug.activeDebugSession) {
-            vscode.debug.stopDebugging();
+        // Stop exactly the session this run started, if any. mac runs (and runs
+        // whose attach never happened) capture nothing and stop nothing.
+        if (testSession) {
+            vscode.debug.stopDebugging(testSession);
         }
 
         run.end();

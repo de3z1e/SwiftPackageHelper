@@ -1666,6 +1666,7 @@ export function activate(context: vscode.ExtensionContext): void {
         // 4. Launch app with console streaming via task. --wait-for-debugger leaves
         //    the process suspended indefinitely, so attaching after launch is safe.
         const allTasks = await vscode.tasks.fetchTasks();
+        if (runId !== currentRunId) return;
         const launchTask = allTasks.find((t) => t.name === 'Run and Debug');
         if (!launchTask) {
             log('[simulator-debug] ERROR: Run and Debug task not found');
@@ -1691,12 +1692,15 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (runId !== currentRunId) return;
         if (!appProcess) {
-            const reason = abortOnConsoleExit.signal.aborted
-                ? 'console task exited before the app process appeared'
-                : 'timed out waiting for the app process';
-            log(`[simulator-debug] ERROR: ${reason}`);
-            buildTaskProvider.writeToConsole('\r\n\x1b[31m** APP LAUNCH FAILED **\x1b[0m\r\n\r\n');
-            consoleExecution?.terminate();
+            if (abortOnConsoleExit.signal.aborted) {
+                log('[simulator-debug] ERROR: console task exited before the app process appeared');
+                // The console pty closed with the task, so writeToConsole would be dropped.
+                printToSharedPanel('** APP LAUNCH FAILED **', '31');
+            } else {
+                log('[simulator-debug] ERROR: timed out waiting for the app process');
+                buildTaskProvider.writeToConsole('\r\n\x1b[31m** APP LAUNCH FAILED **\x1b[0m\r\n\r\n');
+                consoleExecution?.terminate();
+            }
             consoleExecution = undefined;
             return;
         }
@@ -1713,8 +1717,26 @@ export function activate(context: vscode.ExtensionContext): void {
             ]
         };
         log('[simulator-debug] starting debug session...');
-        const started = await vscode.debug.startDebugging(folder, debugConfig);
-        if (runId !== currentRunId) return;
+        // A cancel inside this await lands before the session registers, so only a captured reference can reap it.
+        let startedSession: vscode.DebugSession | undefined;
+        const sessionCapture = vscode.debug.onDidStartDebugSession((session) => {
+            if (!startedSession && session.name === debugConfig.name) {
+                startedSession = session;
+            }
+        });
+        let started = false;
+        try {
+            started = await vscode.debug.startDebugging(folder, debugConfig);
+        } finally {
+            sessionCapture.dispose();
+        }
+        if (runId !== currentRunId) {
+            if (startedSession) {
+                log('[simulator-debug] run cancelled during attach — stopping orphaned session');
+                vscode.debug.stopDebugging(startedSession);
+            }
+            return;
+        }
         if (!started) {
             log('[simulator-debug] debug session failed to start');
             buildTaskProvider.writeToConsole('\r\n\x1b[31m** APP LAUNCH FAILED **\x1b[0m\r\n\r\n');
@@ -1723,7 +1745,7 @@ export function activate(context: vscode.ExtensionContext): void {
         } else {
             log('[simulator-debug] debug session started');
             buildTaskProvider.writeToConsole('\r\n\x1b[32m** APP LAUNCH SUCCEEDED **\x1b[0m\r\n\r\n');
-            activeDebugSession = vscode.debug.activeDebugSession;
+            activeDebugSession = startedSession ?? vscode.debug.activeDebugSession;
         }
     }
 

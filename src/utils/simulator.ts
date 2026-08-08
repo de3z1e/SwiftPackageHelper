@@ -259,8 +259,8 @@ export async function listSimulatorAppProcesses(query: SimulatorAppQuery): Promi
 }
 
 /**
- * Polling cannot miss the process because `simctl launch --wait-for-debugger`
- * leaves it suspended indefinitely. `excludePids` is what disambiguates a stopped
+ * Polling can only miss a process the caller didn't suspend — `simctl launch
+ * --wait-for-debugger` holds it indefinitely. `excludePids` disambiguates a stopped
  * same-device orphan, which `simctl terminate` cannot reap (SIGTERM stays pending).
  */
 export async function waitForNewSimulatorAppProcess(
