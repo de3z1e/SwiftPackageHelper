@@ -34,6 +34,7 @@ import { SidebarProvider, autoConfigureBuildTasks, promptXcodeFirstLaunch } from
 import { XCTestController } from './providers/testController';
 import { updateBuildSetting } from './writers/pbxproj';
 import { createSwiftFileWatcher, reconcileSwiftFiles } from './sync/swiftFileSync';
+import { createDataModelWatcher, reconcileDataModels } from './sync/dataModelSync';
 import { SwiftFormatProvider } from './providers/swiftFormatProvider';
 import { CodeQualityWebviewProvider } from './providers/codeQualityWebviewProvider';
 import {
@@ -2164,47 +2165,71 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // ── File watcher ──────────────────────────────────────────
 
+    // Package.swift's resource list is derived from disk, so any project or bundle change needs a regen.
+    const regeneratePackageSwift = (source: string): void => {
+        const wsFolders = vscode.workspace.workspaceFolders;
+        if (!wsFolders || wsFolders.length === 0) { return; }
+        generatePackageSwift(wsFolders[0].uri.fsPath, 'Debug', true, currentDestinationType(context.workspaceState)).catch((error) => {
+            const message = (error as { message?: string }).message || String(error);
+            log(`${source} Package.swift regen failed: ${message}`);
+        });
+    };
+
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.pbxproj');
     const onProjectChange = watcher.onDidChange(async () => {
         sidebarProvider.refresh();
         testController.refresh();
-        const wsFolders = vscode.workspace.workspaceFolders;
-        if (wsFolders && wsFolders.length > 0) {
-            generatePackageSwift(wsFolders[0].uri.fsPath, 'Debug', true, currentDestinationType(context.workspaceState)).catch((error) => {
-                const message = (error as { message?: string }).message || String(error);
-                log(`[file-watcher] Package.swift regen failed: ${message}`);
-            });
-        }
+        regeneratePackageSwift('[file-watcher]');
         // Not awaited: the prompt can sit unanswered indefinitely.
         handlePossibleBundleIdRename(log, context.workspaceState, projectRoot)
             .then((didUninstall) => { if (didUninstall) { sidebarProvider.refresh(); } })
             .catch((error) => log(`[pbxproj-watcher] rename check failed: ${error}`));
     });
 
-    // ── Swift file watcher (auto-sync to pbxproj) ─────────────
+    // ── Project file watchers (auto-sync to pbxproj) ──────────
 
     const swiftWatcherDisposables = createSwiftFileWatcher(projectRoot, log);
     context.subscriptions.push(...swiftWatcherDisposables);
 
-    // Catch-up scan for Swift files added while the watcher wasn't live (VS Code closed, git checkout, external tooling).
-    reconcileSwiftFiles(projectRoot, log)
-        .then((added) => {
-            if (added > 0) {
-                vscode.window.showInformationMessage(`VSXcode: added ${added} Swift file(s) to the Xcode project.`);
+    const dataModelWatcherDisposables = createDataModelWatcher(
+        projectRoot,
+        log,
+        () => regeneratePackageSwift('[datamodel-sync]')
+    );
+    context.subscriptions.push(...dataModelWatcherDisposables);
+
+    // Catch-up scan for files added or removed while the watchers weren't live (VS Code closed, git checkout, external tooling).
+    const reconcileProjectFiles = async (): Promise<string | null> => {
+        const swiftAdded = await reconcileSwiftFiles(projectRoot, log);
+        const dataModels = await reconcileDataModels(projectRoot, log);
+
+        const changes: string[] = [];
+        if (swiftAdded > 0) { changes.push(`added ${swiftAdded} Swift file(s)`); }
+        if (dataModels.added > 0) { changes.push(`added ${dataModels.added} Core Data model(s)`); }
+        if (dataModels.updated > 0) { changes.push(`refreshed ${dataModels.updated} Core Data model(s)`); }
+        if (dataModels.removed > 0) { changes.push(`removed ${dataModels.removed} stale Core Data model(s)`); }
+        if (changes.length === 0) { return null; }
+
+        regeneratePackageSwift('[project-sync]');
+        return `VSXcode: ${changes.join(', ')} in the Xcode project.`;
+    };
+
+    reconcileProjectFiles()
+        .then((summary) => {
+            if (summary) {
+                vscode.window.showInformationMessage(summary);
             }
         })
         .catch((error) => {
             const message = (error as { message?: string }).message || String(error);
-            log(`[swift-sync] reconcile failed: ${message}`);
+            log(`[project-sync] reconcile failed: ${message}`);
         });
 
     const syncProjectFilesCmd = vscode.commands.registerCommand('vsxcode.syncProjectFiles', async () => {
         try {
-            const added = await reconcileSwiftFiles(projectRoot, log);
+            const summary = await reconcileProjectFiles();
             vscode.window.showInformationMessage(
-                added > 0
-                    ? `VSXcode: added ${added} Swift file(s) to the Xcode project.`
-                    : 'VSXcode: all Swift files are already in sync.'
+                summary ?? 'VSXcode: project files are already in sync.'
             );
         } catch (error) {
             const message = (error as { message?: string }).message || String(error);

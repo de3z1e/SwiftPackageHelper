@@ -60,7 +60,9 @@ src/
 │   ├── frameworks.ts            — PBXFrameworksBuildPhase parsing, framework name extraction
 │   ├── resources.ts             — PBXResourcesBuildPhase parsing, resource type classification,
 │   │                              scanForUnhandledFiles (filesystem scan for SPM compatibility)
-│   └── groups.ts                — PBXGroup hierarchy parsing, path-to-group resolution
+│   ├── groups.ts                — PBXGroup hierarchy parsing, path-to-group resolution
+│   └── versionGroups.ts         — XCVersionGroup parsing (.xcdatamodeld bundles): children,
+│                                  currentVersion, section bounds, entry offsets
 ├── generators/
 │   ├── packageSwift.ts          — Main Package.swift builder (platforms, products, deps, targets)
 │   ├── swiftSettings.ts         — .define(), .unsafeFlags() from build settings
@@ -69,10 +71,17 @@ src/
 │   └── buildTasks.ts            — xcodebuild shell commands (build, build-install, run-and-debug)
 ├── writers/
 │   └── pbxproj.ts               — pbxproj modification: add/remove PBXBuildFile, PBXFileReference,
-│                                  PBXGroup children, PBXSourcesBuildPhase entries; ID generation
+│                                  PBXGroup children, PBXSourcesBuildPhase entries, XCVersionGroup
+│                                  entries and section; ID generation
 ├── sync/
-│   └── swiftFileSync.ts         — FileSystemWatcher for *.swift, target-directory mapping,
-│                                  orchestrates pbxproj updates on file create/delete
+│   ├── pbxprojSync.ts           — Shared sync infrastructure: target-directory mapping, group
+│   │                              resolution, pbxproj path lookup, serialized write queue,
+│   │                              per-path debouncer, bundle-aware directory walker
+│   ├── swiftFileSync.ts         — FileSystemWatcher for *.swift, orchestrates pbxproj updates
+│   │                              on file create/delete; catch-up reconcile (add-only)
+│   └── dataModelSync.ts         — FileSystemWatcher for *.xcdatamodeld directory bundles,
+│                                  reads .xccurrentversion, orchestrates the five pbxproj
+│                                  structures; catch-up reconcile (add + refresh + remove)
 ├── providers/
 │   ├── taskProvider.ts          — vscode.TaskProvider for xcode-build task type (4 subtasks)
 │   ├── debugConfigProvider.ts   — vscode.DebugConfigurationProvider for lldb-dap attach configs
@@ -96,6 +105,8 @@ src/
 - **Filesystem scanning**: After pbxproj parsing, `scanForUnhandledFiles` walks target directories to auto-exclude Xcode-specific files (Info.plist, .entitlements, .pch) and auto-include bundle-like resource directories (.xcdatamodeld, .xcassets, .lproj, etc.) that SPM can't auto-categorize
 - **Auto-sync (pbxproj → Package.swift)**: FileSystemWatcher on `*.pbxproj` triggers silent Package.swift regeneration
 - **Auto-sync (Swift files → pbxproj)**: FileSystemWatcher on `*.swift` detects file create/delete in target directories and updates pbxproj (4 entries: PBXBuildFile, PBXFileReference, PBXGroup, PBXSourcesBuildPhase). Handles subdirectories via PBXGroup tree resolution. Debounced (300ms) with write serialization.
+- **Auto-sync (Core Data models → pbxproj)**: FileSystemWatcher on `*.xcdatamodeld` treats the bundle as one unit (the directory, not the files inside) and updates 5 structures: PBXBuildFile, a `wrapper.xcdatamodel` PBXFileReference per version, PBXGroup child, PBXSourcesBuildPhase entry (momc compiles models — Sources, not Resources), and the XCVersionGroup, whose section markers are created on the first model and dropped with the last. `children`/`currentVersion` come from the bundle's `.xccurrentversion`, falling back to the sole version; a bundle whose versions drift from what pbxproj records is re-registered, since a `currentVersion` pointing at a missing version is the same momc failure as no entry at all. Both events run the same routine and decide from disk rather than the event kind, so a rename or atomic replace settles correctly. Shares the swift sync's debounce and write queue.
+- **Reconcile**: `vsxcode.syncProjectFiles` (and activation) catches up on changes the watchers missed. Swift files are add-only; Core Data models are also removed when the bundle is gone from disk, since a stale XCVersionGroup fails the build with momc's "No current version for model". Removal requires the model to be absent both at its resolved path and by name, so an unresolvable group tree is never read as a deletion.
 - **Auto-configure**: On activation, auto-detects first project/target/simulator and stores `BuildTaskConfig` to workspace state
 - **Task chaining**: build-install completion triggers run-and-debug; debug session end kills debugserver
 - **Physical device support**: Build → install via devicectl → poll device ready → launch console → attach lldb-dap

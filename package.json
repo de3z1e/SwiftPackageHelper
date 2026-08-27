@@ -161,7 +161,7 @@
             },
             {
                 "command": "vsxcode.syncProjectFiles",
-                "title": "Swift: Sync Swift Files to Xcode Project",
+                "title": "Swift: Sync Project Files to Xcode Project",
                 "icon": "$(sync)"
             }
         ],
