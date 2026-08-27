@@ -17,7 +17,7 @@ No test framework or linter is configured.
 find . -maxdepth 1 -name "*.vsix" -delete && npm run compile && npm run package && code --install-extension *.vsix --force
 ```
 
-**Before committing**: Always launch an independent subagent to audit the staged diff before running `git commit`. The subagent should review the changes, read relevant surrounding files for full context, and check for bugs, logic gaps, unintended side effects, and issues beyond just the changed lines. Only commit after the audit passes clean.
+**Before committing**: Always launch an independent subagent to audit the staged diff before running `git commit`. The subagent should review the changes, read relevant surrounding files for full context, and check for bugs, logic gaps, unintended side effects, and issues beyond just the changed lines. The audit's final step is a PII sweep: this repository is public, so no real names, device names, other project names, private links, or email addresses may appear in code, comments, docs, examples, or commit messages — use generic placeholders (`MyApp`, `"My MacBook Pro"`). Only commit after the audit passes clean.
 
 ## Architecture
 
