@@ -28,6 +28,12 @@ import { buildPackageSwift, formatPackageDependencyEntry } from './generators/pa
 import { listAvailableSimulators, listPhysicalDevices, devicectlInstall, checkDeviceReady, findDeviceSymbols, getMyMacDestination, listSimulatorAppProcesses, waitForNewSimulatorAppProcess } from './utils/simulator';
 import type { SimulatorAppQuery, SimulatorAppProcess } from './utils/simulator';
 import { getDestinationType, builtAppPath, derivedDataBasePath } from './utils/destination';
+import {
+    derivedSourcesHomeRelativePath,
+    derivedSourcesPathForWorkspace,
+    generateCoreDataSources,
+    writeWorkspaceMarker
+} from './utils/coreDataCodegen';
 import { XcodeBuildTaskProvider, TASK_TYPE } from './providers/taskProvider';
 import { XcodeDebugConfigProvider } from './providers/debugConfigProvider';
 import { SidebarProvider, autoConfigureBuildTasks, promptXcodeFirstLaunch } from './providers/sidebarProvider';
@@ -262,7 +268,20 @@ async function reconfigureSourceKitLSP(projectRoot: string, config: BuildTaskCon
     await configureSourceKitLSP(dest, platforms);
 }
 
-async function generatePackageSwift(rootPath: string, configurationName: string = 'Debug', silent: boolean = false, destinationType: DestinationType = 'simulator'): Promise<void> {
+// Serialized per workspace: momc is awaited between the pbxproj read and the Package.swift write, so concurrent runs would let a stale read win.
+const packageGenerationChains = new Map<string, Promise<void>>();
+
+function generatePackageSwift(rootPath: string, configurationName: string = 'Debug', silent: boolean = false, destinationType: DestinationType = 'simulator', logger: (message: string) => void = () => {}): Promise<void> {
+    const key = path.resolve(rootPath);
+    const previous = packageGenerationChains.get(key) ?? Promise.resolve();
+    const run = previous.then(() =>
+        generatePackageSwiftSerialized(rootPath, configurationName, silent, destinationType, logger)
+    );
+    packageGenerationChains.set(key, run.then(() => undefined, () => undefined));
+    return run;
+}
+
+async function generatePackageSwiftSerialized(rootPath: string, configurationName: string, silent: boolean, destinationType: DestinationType, logger: (message: string) => void): Promise<void> {
     const entries = await fsp.readdir(rootPath, { withFileTypes: true });
     const xcodeProjects = entries.filter(
         (entry) => entry.isDirectory() && entry.name.endsWith('.xcodeproj')
@@ -394,6 +413,7 @@ async function generatePackageSwift(rootPath: string, configurationName: string 
         }
     }
 
+    const swiftMajorByTarget = new Map<string, string>();
     const targetOutputs: TargetOutput[] = nativeTargets.map((nativeTarget) => {
         const targetDef = targetDefinitions.find((t) => t.name === nativeTarget.name)!;
         const buildPhases = parseBuildPhaseIds(pbxContents, nativeTarget.name);
@@ -426,6 +446,7 @@ async function generatePackageSwift(rootPath: string, configurationName: string 
         const strictConcurrency = targetSettings?.strictConcurrency || projectBuildSettings?.strictConcurrency;
         const effectiveVersion = swiftLangVersion || swiftVersion;
         const majorVersion = parseInt(effectiveVersion.split('.')[0], 10);
+        swiftMajorByTarget.set(nativeTarget.name, Number.isNaN(majorVersion) ? '5' : String(majorVersion));
         if (strictConcurrency && majorVersion < 6) {
             if (strictConcurrency === 'complete') {
                 swiftSettings.push(`.enableUpcomingFeature("StrictConcurrency")`);
@@ -458,6 +479,60 @@ async function generatePackageSwift(rootPath: string, configurationName: string 
         };
     });
 
+    // ── Core Data codegen for SourceKit-LSP ──
+    // SwiftPM never runs momc's generate step, so class/category-codegen models leave the LSP build with "Cannot find 'X' in scope".
+    const escapeForSwiftLiteral = (value: string): string =>
+        value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+            .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+    const codegenTargets = targetOutputs
+        .map((targetOutput) => ({
+            targetOutput,
+            modelPaths: (targetOutput.resources ?? [])
+                .filter((resource) => resource.path.toLowerCase().endsWith('.xcdatamodeld'))
+                .map((resource) => path.join(rootPath, targetOutput.path, resource.path))
+        }))
+        .filter((entry) => entry.modelPaths.length > 0);
+
+    let hasCodegen = false;
+    if (codegenTargets.length > 0) {
+        const codegenPlatform = platforms.find((entry) => entry.platform === 'iOS') ?? platforms[0] ?? DEFAULT_PLATFORM;
+        const derivedSourcesRoot = derivedSourcesPathForWorkspace(rootPath);
+        await writeWorkspaceMarker(derivedSourcesRoot, rootPath).catch(() => {});
+
+        for (const { targetOutput, modelPaths } of codegenTargets) {
+            try {
+                const generated = await generateCoreDataSources({
+                    modelPaths,
+                    outputDir: path.join(derivedSourcesRoot, targetOutput.name),
+                    moduleName: targetOutput.name,
+                    platform: codegenPlatform.platform,
+                    deploymentTarget: codegenPlatform.version,
+                    swiftVersion: swiftMajorByTarget.get(targetOutput.name) ?? '5'
+                });
+                if (generated.length === 0) {
+                    continue; // Manual/None codegen — the classes are hand-written target sources.
+                }
+                const entries = generated
+                    .map((file) =>
+                        `"\\(coreDataGenerated)/${escapeForSwiftLiteral(targetOutput.name)}/${escapeForSwiftLiteral(path.basename(file))}"`)
+                    .join(', ');
+                targetOutput.swiftSettings = [...(targetOutput.swiftSettings ?? []), `.unsafeFlags([${entries}])`];
+                hasCodegen = true;
+            } catch (error) {
+                const message = (error as { message?: string }).message || String(error);
+                logger(`[codegen] ${targetOutput.name}: momc failed — continuing without generated model classes: ${message}`);
+            }
+        }
+    }
+
+    // The manifest derives $HOME itself via `Context.environment` so it stays machine-portable.
+    const preamble = hasCodegen
+        ? [
+            '// Xcode-generated Core Data classes, kept outside the repository.',
+            `let coreDataGenerated = "\\(Context.environment["HOME"] ?? "")/${escapeForSwiftLiteral(derivedSourcesHomeRelativePath(rootPath))}"`
+        ].join('\n')
+        : undefined;
+
     const packageContents = buildPackageSwift({
         packageName,
         swiftVersion,
@@ -465,7 +540,8 @@ async function generatePackageSwift(rootPath: string, configurationName: string 
         products,
         dependencies: uniquePackageDependencies,
         targets: targetOutputs,
-        defaultLocalization: defaultLocalization || undefined
+        defaultLocalization: defaultLocalization || undefined,
+        preamble
     });
 
     // Point SourceKit-LSP at the SDK matching the selected run destination.
@@ -1058,7 +1134,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // (e.g. cleared to the host SDK for a macOS-only project). Non-blocking.
     void (async () => {
         await autoConfigureBuildTasks(context.workspaceState, sidebarProvider);
-        await generatePackageSwift(projectRoot, 'Debug', true, currentDestinationType(context.workspaceState)).catch(() => {});
+        await generatePackageSwift(projectRoot, 'Debug', true, currentDestinationType(context.workspaceState), log).catch(() => {});
     })();
 
     // Seed the rename detector so the very next pbxproj edit can be
@@ -1097,7 +1173,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 if (!workspaceFolders || workspaceFolders.length === 0) {
                     throw new Error('Open a workspace folder before running this command.');
                 }
-                await generatePackageSwift(workspaceFolders[0].uri.fsPath, 'Debug', false, currentDestinationType(context.workspaceState));
+                await generatePackageSwift(workspaceFolders[0].uri.fsPath, 'Debug', false, currentDestinationType(context.workspaceState), log);
             } catch (error) {
                 const message = (error as { message?: string }).message as string;
                 vscode.window.showErrorMessage(message);
@@ -1117,7 +1193,7 @@ export function activate(context: vscode.ExtensionContext): void {
                     placeHolder: 'Select build configuration for settings extraction'
                 });
                 if (!config) { return; }
-                await generatePackageSwift(workspaceFolders[0].uri.fsPath, config, false, currentDestinationType(context.workspaceState));
+                await generatePackageSwift(workspaceFolders[0].uri.fsPath, config, false, currentDestinationType(context.workspaceState), log);
             } catch (error) {
                 const message = (error as { message?: string }).message as string;
                 vscode.window.showErrorMessage(message);
@@ -2169,7 +2245,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const regeneratePackageSwift = (source: string): void => {
         const wsFolders = vscode.workspace.workspaceFolders;
         if (!wsFolders || wsFolders.length === 0) { return; }
-        generatePackageSwift(wsFolders[0].uri.fsPath, 'Debug', true, currentDestinationType(context.workspaceState)).catch((error) => {
+        generatePackageSwift(wsFolders[0].uri.fsPath, 'Debug', true, currentDestinationType(context.workspaceState), log).catch((error) => {
             const message = (error as { message?: string }).message || String(error);
             log(`${source} Package.swift regen failed: ${message}`);
         });

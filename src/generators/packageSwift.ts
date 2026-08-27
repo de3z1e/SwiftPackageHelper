@@ -206,7 +206,8 @@ export function buildPackageSwift({
     products,
     dependencies,
     targets,
-    defaultLocalization
+    defaultLocalization,
+    preamble
 }: BuildPackageSwiftOptions): string {
     const platformsSection = formatPlatforms(platforms);
     const productsSection = formatProducts(products);
@@ -220,7 +221,7 @@ export function buildPackageSwift({
 // Managed by VSXcode — changes will be overwritten
 
 import PackageDescription
-
+${preamble ? `\n${preamble}\n` : ''}
 let package = Package(
     name: "${packageName}",${defaultLocalizationLine}
     platforms: [

@@ -83,7 +83,7 @@ async function sdkPath(sdk: string): Promise<string> {
 export interface GenerateCoreDataSourcesOptions {
     /** Absolute paths of the target's `.xcdatamodeld` bundles. */
     modelPaths: string[];
-    /** Target's output directory; wiped and recreated on every run. */
+    /** Target's output directory; replaced wholesale on every successful run. */
     outputDir: string;
     /** SwiftPM module the classes must land in — the Package.swift target name. */
     moduleName: string;
@@ -95,8 +95,9 @@ export interface GenerateCoreDataSourcesOptions {
 
 /**
  * Generated `.swift` paths for each model, sorted. Manual/None codegen emits
- * nothing, so an empty result is success. `outputDir` is wiped first so removed
- * entities leave no stale classes; momc failures throw.
+ * nothing, so an empty result is success. `outputDir` is replaced rather than
+ * merged, so removed entities leave no stale classes; momc failures throw and
+ * leave the previous `outputDir` intact.
  */
 export async function generateCoreDataSources(
     options: GenerateCoreDataSourcesOptions
@@ -106,38 +107,48 @@ export async function generateCoreDataSources(
     return result;
 }
 
-// Serialized so overlapping invocations (activation racing a watcher regen)
-// can't land one run's wipe in the middle of another's momc loop.
+// Serialized so one run's wipe can't land in the middle of another's momc loop.
 let generationChain: Promise<void> = Promise.resolve();
 
 async function runGeneration(options: GenerateCoreDataSourcesOptions): Promise<string[]> {
     const { modelPaths, outputDir, moduleName, platform, deploymentTarget, swiftVersion } = options;
 
-    // The recursive wipe must never point outside the extension's own tree.
+    // The recursive wipes must never point outside the extension's own tree.
     if (!outputDir.startsWith(derivedSourcesBasePath() + path.sep)) {
         throw new Error(`Refusing to wipe ${outputDir}: outside ${derivedSourcesBasePath()}`);
     }
 
-    await fsp.rm(outputDir, { recursive: true, force: true });
-    await fsp.mkdir(outputDir, { recursive: true });
+    // Swap in a staged sibling so an in-flight SourceKit-LSP index build never sees a
+    // half-populated directory; runs are serialized, so the fixed suffix cannot collide.
+    const stagingDir = `${outputDir}.generating`;
+    await fsp.rm(stagingDir, { recursive: true, force: true });
+    await fsp.mkdir(stagingDir, { recursive: true });
 
     const momcPlatform = MOMC_PLATFORMS[platform];
     const sdkroot = await sdkPath(momcPlatform.sdk);
     // momc wants the marketing form ("5.0"), matching Xcode's own invocation.
     const momcSwiftVersion = swiftVersion.includes('.') ? swiftVersion : `${swiftVersion}.0`;
 
-    for (const modelPath of modelPaths) {
-        await execFile('xcrun', [
-            'momc',
-            '--sdkroot', sdkroot,
-            momcPlatform.deploymentFlag, deploymentTarget,
-            '--module', moduleName,
-            '--swift-version', momcSwiftVersion,
-            '--action', 'generate',
-            modelPath,
-            outputDir
-        ], { encoding: 'utf8' });
+    try {
+        for (const modelPath of modelPaths) {
+            await execFile('xcrun', [
+                'momc',
+                '--sdkroot', sdkroot,
+                momcPlatform.deploymentFlag, deploymentTarget,
+                '--module', moduleName,
+                '--swift-version', momcSwiftVersion,
+                '--action', 'generate',
+                modelPath,
+                stagingDir
+            ], { encoding: 'utf8' });
+        }
+    } catch (error) {
+        await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+        throw error;
     }
+
+    await fsp.rm(outputDir, { recursive: true, force: true });
+    await fsp.rename(stagingDir, outputDir);
 
     const entries = await fsp.readdir(outputDir);
     return entries

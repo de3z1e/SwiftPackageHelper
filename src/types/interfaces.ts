@@ -88,6 +88,8 @@ export interface BuildPackageSwiftOptions {
     dependencies: string[];
     targets: TargetOutput[];
     defaultLocalization?: string;
+    /** Swift lines emitted between `import PackageDescription` and the Package literal. */
+    preamble?: string;
 }
 
 export interface BuildSettings {
