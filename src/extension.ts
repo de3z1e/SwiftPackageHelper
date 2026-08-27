@@ -2274,6 +2274,25 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     context.subscriptions.push(...dataModelWatcherDisposables);
 
+    // Editing entities rewrites only files inside the bundle, which the bundle-level watcher never sees and pbxproj never records — so nothing else re-runs codegen.
+    const modelContentsWatcher = vscode.workspace.createFileSystemWatcher('**/*.xcdatamodeld/**');
+    let modelContentsTimer: ReturnType<typeof setTimeout> | undefined;
+    const onModelContentsEvent = (): void => {
+        if (modelContentsTimer) { clearTimeout(modelContentsTimer); }
+        // Xcode rewrites several inner files per edit.
+        modelContentsTimer = setTimeout(() => {
+            modelContentsTimer = undefined;
+            regeneratePackageSwift('[model-contents]');
+        }, 500);
+    };
+    context.subscriptions.push(
+        modelContentsWatcher,
+        modelContentsWatcher.onDidChange(onModelContentsEvent),
+        modelContentsWatcher.onDidCreate(onModelContentsEvent),
+        modelContentsWatcher.onDidDelete(onModelContentsEvent),
+        { dispose: () => { if (modelContentsTimer) { clearTimeout(modelContentsTimer); } } }
+    );
+
     // Catch-up scan for files added or removed while the watchers weren't live (VS Code closed, git checkout, external tooling).
     const reconcileProjectFiles = async (): Promise<string | null> => {
         const swiftAdded = await reconcileSwiftFiles(projectRoot, log);
