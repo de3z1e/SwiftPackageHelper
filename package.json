@@ -2,7 +2,7 @@
     "name": "vsxcode",
     "displayName": "VSXcode",
     "description": "Xcode project integration for VS Code — IntelliSense, build tasks, device/simulator debugging, and native swift-format code formatting.",
-    "version": "3.7.2",
+    "version": "3.8.0",
     "publisher": "de3z1e",
     "icon": "images/icon.png",
     "license": "MIT",

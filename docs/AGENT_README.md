@@ -18,10 +18,17 @@ The extension activates on `workspaceContains:**/*.pbxproj` or `onDebug`. Once a
 - **Don't manually edit `Package.swift`.** Edits will be silently overwritten on the next pbxproj change. If you need to change something Package.swift exposes (platform deployment targets, swift settings, dependencies), modify the `.xcodeproj` source via Xcode or by editing pbxproj directly — the extension will regenerate Package.swift to match.
 - **Why Package.swift exists at all**: it is a *shadow project* used solely to populate SourceKit-LSP's index store for cross-file intellisense. Actual app builds go through `xcodebuild`. Resources, swift settings, etc. in Package.swift do not affect what ships.
 
-### Pbxproj sync on Swift file create/delete
+### Pbxproj sync on Swift file and Core Data model create/delete
 - **What**: When the user creates or deletes a `.swift` file inside a target's directory, the extension automatically updates `project.pbxproj` (adds/removes the four required entries: `PBXBuildFile`, `PBXFileReference`, `PBXGroup` child entry, `PBXSourcesBuildPhase` entry).
-- **Don't manually edit pbxproj to register a new Swift file.** Just create the file in the right directory; the extension's `FileSystemWatcher` (debounced 300ms, write-serialized) handles the pbxproj update.
+- **Core Data models too**: `.xcdatamodeld` bundles are synced as one unit — create/delete updates all five structures (`PBXBuildFile`, a `wrapper.xcdatamodel` `PBXFileReference` per version, `PBXGroup` child, `PBXSourcesBuildPhase` entry, and the `XCVersionGroup` with its section markers); a move re-homes the group entry in place. `children`/`currentVersion` follow the bundle's `.xccurrentversion`; version drift on disk is re-registered automatically.
+- **Don't manually edit pbxproj to register or remove a Swift file or a Core Data model.** Just create or delete it in the right directory; the extension's `FileSystemWatcher` (debounced, write-serialized) handles the pbxproj update. The `vsxcode.syncProjectFiles` command and activation reconcile catch what a closed window missed — Swift additions plus model additions, refreshes, and removals.
+- **One gap**: a `.swift` file deleted while VS Code was closed (or by `git checkout`) is not reconciled — the Swift reconcile is deliberately add-only. If a build fails on a stale reference to a deleted Swift file, recreate the file and delete it again with the window open, or remove its pbxproj entries by hand in that one case.
 - **Exception**: targets using Xcode 16+ file system synchronized groups (`PBXFileSystemSynchronizedRootGroup`) need no pbxproj entry at all — Xcode auto-discovers files in the directory. The extension correctly skips pbxproj sync for these targets.
+
+### Core Data codegen for IntelliSense
+- **What**: For models using class/category codegen, the extension runs Xcode's own generator (`momc`) into `~/Library/Developer/VSCode/DerivedSources/<workspaceKey>/<Target>/` and wires the files into `Package.swift`, so generated `NSManagedObject` subclasses resolve in SourceKit-LSP. Regenerates on activation, pbxproj changes, model edits, and Clean DerivedData.
+- **Don't "fix" `Cannot find 'SomeEntity' in scope` on codegen types** by generating subclass files into the target, checking generated classes into the repo, or flipping the model's codegen to Manual/None — the model file, the repository, and pbxproj are deliberately untouched by this feature, and duplicating the classes breaks the Xcode build.
+- If those errors appear anyway, trigger a regen — run **Clean DerivedData** (wipes and regenerates the codegen), save `project.pbxproj`, or reload the window — and check the output channel's `[codegen]` lines for momc failures.
 
 ### SourceKit-LSP server arguments
 - **What**: The extension writes `swift.sourcekit-lsp.serverArguments` into `.vscode/settings.json` with iOS-simulator SDK paths, target triple, framework search paths, and XCTest overlay paths.
@@ -146,6 +153,7 @@ Before doing one of these manually, check the table:
 | Switch scheme | Run command `vsxcode.sidebar.changeScheme` |
 | Update Package.swift to reflect a pbxproj change | Do nothing — the watcher regenerates automatically |
 | Add a Swift file to a target | Just create the file in the right directory — pbxproj is updated automatically |
+| Add or remove a Core Data model | Just create or delete the `.xcdatamodeld` bundle — pbxproj (all five structures) is updated automatically |
 | Format Swift code | Save the file (format-on-save) or invoke "Format Document" |
 | Configure swift-format rules | Open the **Code Format** sidebar panel |
 | Refresh SourceKit-LSP after Xcode version switch | Run command `vsxcode.createFromXcodeproj` to regenerate Package.swift + serverArguments |
@@ -171,10 +179,10 @@ Before doing one of these manually, check the table:
 | `.vscode/settings.json` | Contains `swift.sourcekit-lsp.serverArguments` written by the extension. Read-only for that key. |
 | `.vscode/.swift-format` | swift-format rule config (JSON). Edit via Code Format sidebar; raw edits also fine. |
 | `.vscode/tasks.json` | Optional. Add `xcode-build` task entries here if you want explicit task definitions. |
-| `<project>.xcodeproj/project.pbxproj` | Source of truth for project structure. The extension reads it and (for Swift file create/delete on non-synchronized targets) writes to it. |
+| `<project>.xcodeproj/project.pbxproj` | Source of truth for project structure. The extension reads it and (for Swift file and Core Data model create/delete on non-synchronized targets) writes to it. |
 
 ---
 
 ## Version
 
-This document describes VSXcode v3.7.2. Behavior is stable across patch versions; if a fundamental capability changes, this file will be updated.
+This document describes VSXcode v3.8.0. Behavior is stable across patch versions; if a fundamental capability changes, this file will be updated.
