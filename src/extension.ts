@@ -2161,7 +2161,15 @@ export function activate(context: vscode.ExtensionContext): void {
                     .filter((entry) => entry.isDirectory())
                     .map((entry) => entry.name);
             } catch { /* base doesn't exist yet */ }
-            if (schemeDirs.length === 0) {
+
+            // The codegen tree is derived state too, so cleaning covers it; the regen below keeps the live manifest valid.
+            const derivedSourcesTree = derivedSourcesPathForWorkspace(projectRoot);
+            let hasDerivedSources = false;
+            try {
+                hasDerivedSources = (await fsp.stat(derivedSourcesTree)).isDirectory();
+            } catch { /* no codegen tree for this workspace */ }
+
+            if (schemeDirs.length === 0 && !hasDerivedSources) {
                 vscode.window.showInformationMessage('VSXcode DerivedData is already clean.');
                 return;
             }
@@ -2173,14 +2181,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
             const sizes = await vscode.window.withProgress(
                 { location: vscode.ProgressLocation.Window, title: 'Measuring DerivedData…' },
-                () => directorySizesBytes(schemeDirs.map((dir) => path.join(base, dir)))
+                () => directorySizesBytes([
+                    ...schemeDirs.map((dir) => path.join(base, dir)),
+                    ...(hasDerivedSources ? [derivedSourcesTree] : [])
+                ])
             );
             const totalBytes = [...sizes.values()].reduce((sum, b) => sum + b, 0);
+            const derivedSourcesBytes = hasDerivedSources ? sizes.get(derivedSourcesTree) : undefined;
+            // Both picks also wipe the codegen tree, so both carry its bytes.
+            const withDerivedSourcesBytes = (bytes: number | undefined): number | undefined =>
+                bytes === undefined && derivedSourcesBytes === undefined
+                    ? undefined
+                    : (bytes ?? 0) + (derivedSourcesBytes ?? 0);
 
             type CleanPick = vscode.QuickPickItem & { schemes: string[]; bytes: number | undefined; noun: string };
             const picks: CleanPick[] = [];
             if (currentScheme) {
-                const bytes = sizes.get(path.join(base, currentScheme));
+                const bytes = withDerivedSourcesBytes(sizes.get(path.join(base, currentScheme)));
                 picks.push({
                     label: `Clean "${currentScheme}"`,
                     description: bytes === undefined ? undefined : formatBytes(bytes),
@@ -2190,7 +2207,7 @@ export function activate(context: vscode.ExtensionContext): void {
                     noun: `scheme "${currentScheme}"`,
                 });
             }
-            if (schemeDirs.length > 1 || !currentScheme) {
+            if (schemeDirs.length > 1 || (!currentScheme && schemeDirs.length > 0)) {
                 picks.push({
                     label: `Clean All Schemes (${schemeDirs.length})`,
                     description: sizes.size === 0 ? undefined : formatBytes(totalBytes),
@@ -2200,14 +2217,25 @@ export function activate(context: vscode.ExtensionContext): void {
                     noun: schemeDirs.length === 1 ? `scheme "${schemeDirs[0]}"` : `all ${schemeDirs.length} schemes`,
                 });
             }
+            if (picks.length === 0) {
+                picks.push({
+                    label: 'Clean Core Data Codegen',
+                    description: derivedSourcesBytes === undefined ? undefined : formatBytes(derivedSourcesBytes),
+                    detail: derivedSourcesTree,
+                    schemes: [],
+                    bytes: derivedSourcesBytes,
+                    noun: 'Core Data codegen',
+                });
+            }
             const pick = picks.length === 1
                 ? picks[0]
                 : await vscode.window.showQuickPick(picks, { placeHolder: 'Clean DerivedData for…' });
             if (!pick) { return; }
 
             const sizeNote = pick.bytes === undefined ? '' : ` This frees ${formatBytes(pick.bytes)}.`;
+            const codegenNote = hasDerivedSources ? ' Core Data codegen will be regenerated automatically.' : '';
             const confirmed = await vscode.window.showWarningMessage(
-                `Delete DerivedData for ${pick.noun}?${sizeNote} The next build will start from scratch.`,
+                `Delete DerivedData for ${pick.noun}?${sizeNote} The next build will start from scratch.${codegenNote}`,
                 { modal: true },
                 'Delete'
             );
@@ -2226,6 +2254,9 @@ export function activate(context: vscode.ExtensionContext): void {
                         for (const scheme of pick.schemes) {
                             await fsp.rm(path.join(base, scheme), { recursive: true, force: true });
                         }
+                        if (hasDerivedSources) {
+                            await fsp.rm(derivedSourcesTree, { recursive: true, force: true });
+                        }
                     }
                 );
             } catch (error) {
@@ -2233,9 +2264,14 @@ export function activate(context: vscode.ExtensionContext): void {
                 vscode.window.showErrorMessage(`VSXcode: failed to clean DerivedData — ${message}`);
                 return;
             }
-            log(`[clean-derived-data] removed ${pick.schemes.length} scheme tree(s) under ${base}`);
+            log(`[clean-derived-data] removed ${pick.schemes.length} scheme tree(s) under ${base}` +
+                (hasDerivedSources ? ' and the Core Data codegen tree' : ''));
             const freed = pick.bytes === undefined ? '' : ` — freed ${formatBytes(pick.bytes)}`;
             vscode.window.showInformationMessage(`Cleaned DerivedData for ${pick.noun}${freed}.`);
+            if (hasDerivedSources) {
+                // The live manifest points at absolute paths inside the wiped tree.
+                regeneratePackageSwift('[clean-derived-data]');
+            }
         }
     );
 
