@@ -20,6 +20,9 @@ const execFile = promisify(execFileCallback) as (
 
 const DERIVED_SOURCES_SEGMENTS = ['Library', 'Developer', 'VSCode', 'DerivedSources'];
 const WORKSPACE_MARKER_FILE = 'workspace.json';
+const OUTPUT_MANIFEST_FILE = 'manifest.json';
+const STAGING_SUFFIX = '.generating';
+const PRUNE_IGNORABLE_FILES = new Set(['.DS_Store']);
 
 /** Absolute path to the root holding one DerivedSources tree per workspace. */
 export function derivedSourcesBasePath(): string {
@@ -80,10 +83,90 @@ async function sdkPath(sdk: string): Promise<string> {
     return resolved;
 }
 
+/** Safe to delete: carries the manifest, is empty, or (pre-manifest legacy) holds only `.swift` files. */
+async function isExtensionOutputDir(dir: string): Promise<boolean | null> {
+    let entries;
+    try {
+        entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+        return null; // Unreadable — report as uninspectable rather than foreign.
+    }
+    return entries.every((entry) =>
+        entry.isFile() && (
+            entry.name === OUTPUT_MANIFEST_FILE ||
+            entry.name.endsWith('.swift') ||
+            PRUNE_IGNORABLE_FILES.has(entry.name)
+        )
+    );
+}
+
+/**
+ * Drops output dirs absent from `activeTargetDirs` and stale `.generating` leftovers.
+ * An emptied tree goes entirely, `workspace.json` included — the next generation recreates both.
+ */
+export function pruneStaleDerivedSources(
+    workspacePath: string,
+    activeTargetDirs: ReadonlySet<string>,
+    log: (message: string) => void = () => {}
+): Promise<void> {
+    const result = generationChain.then(() => runPrune(workspacePath, activeTargetDirs, log));
+    generationChain = result.then(() => undefined, () => undefined);
+    return result;
+}
+
+async function runPrune(
+    workspacePath: string,
+    activeTargetDirs: ReadonlySet<string>,
+    log: (message: string) => void
+): Promise<void> {
+    const root = derivedSourcesPathForWorkspace(workspacePath);
+    // Invariant, not reachable via inputs: everything deleted below sits under the extension's own base.
+    if (!root.startsWith(derivedSourcesBasePath() + path.sep)) {
+        throw new Error(`Refusing to prune ${root}: outside ${derivedSourcesBasePath()}`);
+    }
+
+    let entries;
+    try {
+        entries = await fsp.readdir(root, { withFileTypes: true });
+    } catch {
+        return; // No tree for this workspace — nothing to prune.
+    }
+
+    let keptForeign = false;
+    for (const entry of entries) {
+        if (!entry.isDirectory()) { continue; }
+        // Serialization guarantees no run is mid-generation, so any staging dir is an interrupted run's leftover.
+        if (!entry.name.endsWith(STAGING_SUFFIX) && activeTargetDirs.has(entry.name)) { continue; }
+        const dir = path.join(root, entry.name);
+        const removable = await isExtensionOutputDir(dir);
+        if (removable) {
+            await fsp.rm(dir, { recursive: true, force: true });
+            log(`removed stale codegen output ${entry.name}`);
+        } else {
+            keptForeign = true;
+            log(removable === null
+                ? `left ${entry.name} in place: could not inspect it`
+                : `left ${entry.name} in place: contains files the extension did not generate`);
+        }
+    }
+
+    if (activeTargetDirs.size > 0 || keptForeign) { return; }
+    let remaining: string[];
+    try {
+        remaining = await fsp.readdir(root);
+    } catch {
+        return;
+    }
+    if (remaining.every((name) => name === WORKSPACE_MARKER_FILE || PRUNE_IGNORABLE_FILES.has(name))) {
+        await fsp.rm(root, { recursive: true, force: true });
+        log('removed empty codegen tree for this workspace');
+    }
+}
+
 export interface GenerateCoreDataSourcesOptions {
     /** Absolute paths of the target's `.xcdatamodeld` bundles. */
     modelPaths: string[];
-    /** Target's output directory; replaced wholesale on every successful run. */
+    /** Target's output directory; replaced wholesale on every run, removed when nothing is emitted. */
     outputDir: string;
     /** SwiftPM module the classes must land in — the Package.swift target name. */
     moduleName: string;
@@ -120,7 +203,7 @@ async function runGeneration(options: GenerateCoreDataSourcesOptions): Promise<s
 
     // Swap in a staged sibling so an in-flight SourceKit-LSP index build never sees a
     // half-populated directory; runs are serialized, so the fixed suffix cannot collide.
-    const stagingDir = `${outputDir}.generating`;
+    const stagingDir = `${outputDir}${STAGING_SUFFIX}`;
     await fsp.rm(stagingDir, { recursive: true, force: true });
     await fsp.mkdir(stagingDir, { recursive: true });
 
@@ -147,12 +230,26 @@ async function runGeneration(options: GenerateCoreDataSourcesOptions): Promise<s
         throw error;
     }
 
+    const generatedNames = (await fsp.readdir(stagingDir))
+        .filter((name) => name.endsWith('.swift'))
+        .sort((a, b) => a.localeCompare(b));
+
+    // Manual/None codegen emits nothing — drop any prior dir so such projects never churn the tree.
+    if (generatedNames.length === 0) {
+        await fsp.rm(stagingDir, { recursive: true, force: true });
+        await fsp.rm(outputDir, { recursive: true, force: true });
+        return [];
+    }
+
+    // Marks the directory as extension output so pruning never has to guess.
+    await fsp.writeFile(
+        path.join(stagingDir, OUTPUT_MANIFEST_FILE),
+        JSON.stringify({ generatedBy: 'vsxcode', files: generatedNames }, null, 2) + '\n',
+        'utf8'
+    );
+
     await fsp.rm(outputDir, { recursive: true, force: true });
     await fsp.rename(stagingDir, outputDir);
 
-    const entries = await fsp.readdir(outputDir);
-    return entries
-        .filter((name) => name.endsWith('.swift'))
-        .sort((a, b) => a.localeCompare(b))
-        .map((name) => path.join(outputDir, name));
+    return generatedNames.map((name) => path.join(outputDir, name));
 }

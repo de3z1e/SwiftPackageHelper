@@ -32,6 +32,7 @@ import {
     derivedSourcesHomeRelativePath,
     derivedSourcesPathForWorkspace,
     generateCoreDataSources,
+    pruneStaleDerivedSources,
     writeWorkspaceMarker
 } from './utils/coreDataCodegen';
 import { XcodeBuildTaskProvider, TASK_TYPE } from './providers/taskProvider';
@@ -494,10 +495,10 @@ async function generatePackageSwiftSerialized(rootPath: string, configurationNam
         .filter((entry) => entry.modelPaths.length > 0);
 
     let hasCodegen = false;
+    const activeCodegenDirs = new Set<string>();
     if (codegenTargets.length > 0) {
         const codegenPlatform = platforms.find((entry) => entry.platform === 'iOS') ?? platforms[0] ?? DEFAULT_PLATFORM;
         const derivedSourcesRoot = derivedSourcesPathForWorkspace(rootPath);
-        await writeWorkspaceMarker(derivedSourcesRoot, rootPath).catch(() => {});
 
         for (const { targetOutput, modelPaths } of codegenTargets) {
             try {
@@ -517,13 +518,28 @@ async function generatePackageSwiftSerialized(rootPath: string, configurationNam
                         `"\\(coreDataGenerated)/${escapeForSwiftLiteral(targetOutput.name)}/${escapeForSwiftLiteral(path.basename(file))}"`)
                     .join(', ');
                 targetOutput.swiftSettings = [...(targetOutput.swiftSettings ?? []), `.unsafeFlags([${entries}])`];
+                if (!hasCodegen) {
+                    // Written lazily so an all-Manual/None project never creates the tree.
+                    await writeWorkspaceMarker(derivedSourcesRoot, rootPath).catch(() => {});
+                }
                 hasCodegen = true;
+                activeCodegenDirs.add(targetOutput.name);
             } catch (error) {
                 const message = (error as { message?: string }).message || String(error);
                 logger(`[codegen] ${targetOutput.name}: momc failed — continuing without generated model classes: ${message}`);
             }
         }
     }
+
+    // Only safe where the on-disk manifest ends up matching this pass: pruning before
+    // the overwrite prompt would strand a Cancel'd manifest pointing at deleted files.
+    const pruneStaleOutputs = async (): Promise<void> => {
+        await pruneStaleDerivedSources(rootPath, activeCodegenDirs, (message) => logger(`[codegen] ${message}`))
+            .catch((error) => {
+                const message = (error as { message?: string }).message || String(error);
+                logger(`[codegen] prune failed: ${message}`);
+            });
+    };
 
     // The manifest derives $HOME itself via `Context.environment` so it stays machine-portable.
     const preamble = hasCodegen
@@ -552,6 +568,8 @@ async function generatePackageSwiftSerialized(rootPath: string, configurationNam
     if (fs.existsSync(packagePath)) {
         const existingContents = await fsp.readFile(packagePath, 'utf8');
         if (existingContents === packageContents) {
+            // Prune here too — a model deleted while the window was closed lands on this path.
+            await pruneStaleOutputs();
             if (!silent) {
                 vscode.window.showInformationMessage('Package.swift is already up to date.');
             }
@@ -587,6 +605,7 @@ async function generatePackageSwiftSerialized(rootPath: string, configurationNam
     }
 
     await fsp.writeFile(packagePath, packageContents, 'utf8');
+    await pruneStaleOutputs();
     if (!silent) {
         const document = await vscode.workspace.openTextDocument(vscode.Uri.file(packagePath));
         await vscode.window.showTextDocument(document, { preview: false });
