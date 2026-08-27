@@ -30,7 +30,7 @@ export interface PhysicalDevice {
 }
 
 export interface MacDestination {
-    name: string; // ComputerName, e.g. "Dimitry's MacBook Pro"
+    name: string; // ComputerName, e.g. "My MacBook Pro"
     arch: string; // arm64 | x86_64
 }
 

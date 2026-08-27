@@ -10,7 +10,8 @@ Open a folder containing an `.xcodeproj` and the extension handles the rest:
 2. **Auto-configures build tasks** with sensible defaults (target, scheme, device/simulator). Bundle id is sourced live from `project.pbxproj` on every operation, so renames take effect immediately.
 3. **Configures SourceKit-LSP** for the active run destination so IntelliSense resolves the right SDK — the iOS simulator SDK for UIKit, or the macOS SDK when targeting My Mac.
 4. **Silently regenerates** `Package.swift` whenever the `.pbxproj` file changes.
-5. **Syncs Swift files to the Xcode project** — when `.swift` files are added or removed from a target directory, the `.xcodeproj` is updated automatically (PBXBuildFile, PBXFileReference, PBXGroup, and PBXSourcesBuildPhase entries).
+5. **Syncs project files to the Xcode project** — when `.swift` files or `.xcdatamodeld` model bundles are added or removed in a target directory, the `.xcodeproj` is updated automatically (build file, file reference, group, and Sources-phase entries — plus the XCVersionGroup for model bundles).
+6. **Resolves Core Data codegen in IntelliSense** — models using class/category codegen get their `NSManagedObject` subclasses generated with the same tool Xcode's build uses and fed to SourceKit-LSP, so generated types resolve without touching your model, project file, or repository — and regenerate automatically when you edit entities.
 
 ### Sidebar
 
@@ -26,7 +27,7 @@ The extension adds a panel to the Activity Bar with configurable build settings:
 
 > **Note:** the suffix applies to every target the scheme builds. Projects with embedded app extensions (whose bundle ids must stay prefixed by the host app's) will be warned once, as those targets may fail to build or install. On physical devices the new id needs provisioning — automatic signing handles it via `-allowProvisioningUpdates`; manual profiles must cover the `-dev` id.
 
-Title bar actions: **Build**, **Build & Run**, **Refresh**, **Sync Files**, and **Clean DerivedData** (deletes the current scheme's build cache — or all schemes — and reports the disk space reclaimed).
+Title bar actions: **Build**, **Build & Run**, **Refresh**, **Sync Files**, and **Clean DerivedData** (deletes the current scheme's build cache — or all schemes — along with the workspace's Core Data codegen when present, reports the disk space reclaimed, and regenerates the codegen immediately).
 
 ### Commands
 
@@ -43,6 +44,7 @@ Title bar actions: **Build**, **Build & Run**, **Refresh**, **Sync Files**, and 
 - Resolves target source paths on disk, including `productName` directory lookup.
 - Resolves resource file paths on disk relative to the target directory.
 - Includes per-target swift settings (`.define`, `.unsafeFlags`, `.swiftLanguageMode`), linked system frameworks, resources, header search paths, target dependencies, and excluded files.
+- Runs Core Data class generation (momc) for targets with `.xcdatamodeld` models and wires the generated sources into the manifest, so codegen types resolve in IntelliSense.
 - Automatically configures SourceKit-LSP server arguments for the selected destination — the iOS simulator SDK (SDK path, target triple, framework search path), or the host macOS SDK when targeting My Mac.
 - Shows a diff view before overwriting when run manually from the command palette.
 
@@ -57,7 +59,7 @@ Build tasks are integrated directly into the extension — no shell scripts, `ta
 - macOS debugging launches the built `.app` directly under LLDB DAP (`request: launch`) — no simulator boot or install step; the app's output streams to the Debug Console.
 - Build configuration is stored in VS Code's workspace state (persists across sessions).
 - Build output is colorized: errors in red, warnings in yellow.
-- Build products are isolated per scheme under `~/Library/Developer/VSCode/DerivedData/`. The **Clean DerivedData** title-bar action deletes the current scheme's tree (or all schemes) after confirmation and reports the reclaimed disk space.
+- Build products are isolated per scheme under `~/Library/Developer/VSCode/DerivedData/`. The **Clean DerivedData** title-bar action deletes the current scheme's tree (or all schemes) along with the workspace's Core Data codegen when present, after confirmation; it reports the reclaimed disk space and regenerates the codegen immediately.
 - After a successful macOS build, the `.app` wrapper's mod date is bumped so the Dock/Finder icon cache picks up app-icon changes — incremental builds rewrite the bundle's contents without touching the wrapper, which otherwise leaves a stale icon on long-lived build trees.
 
 ### Code Format (swift-format)

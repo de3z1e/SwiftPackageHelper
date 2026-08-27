@@ -502,7 +502,7 @@ export class XCTestController implements vscode.Disposable {
         currentTestItem: vscode.TestItem | undefined
     ): vscode.TestItem | undefined {
         // xcodebuild uses Objective-C runtime names: -[ModuleName.ClassName methodName]
-        // The module prefix (e.g. "PetsTests.PetsTests") must be handled by findTestItem.
+        // The module prefix (e.g. "MyAppTests.MyAppTests") must be handled by findTestItem.
         const output = line + '\r\n';
 
         // Test Case '-[Module.Class method]' started.
