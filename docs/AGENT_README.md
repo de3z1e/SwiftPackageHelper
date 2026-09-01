@@ -55,7 +55,7 @@ The extension activates on `workspaceContains:**/*.pbxproj` or `onDebug`. Once a
 
 ### Build / run / debug
 
-The extension contributes a custom `xcode-build` task type with four subtasks. When the user wants to build, run, or debug, **suggest invoking these tasks** (via the VS Code Tasks UI, or by adding to `.vscode/tasks.json`) rather than constructing raw `xcodebuild` shell commands. The tasks already handle scheme detection, DerivedData isolation per scheme, simulator boot, app install via `xcrun simctl` / `devicectl`, console attachment, and lldb-dap debug session lifecycle.
+The extension contributes a custom `xcode-build` task type with four subtasks. When the user wants to build, run, or debug, **suggest invoking these tasks** (via the VS Code Tasks UI, or by adding to `.vscode/tasks.json`) rather than constructing raw `xcodebuild` shell commands. The tasks already handle scheme detection, DerivedData isolation per scheme, simulator boot, app install via `xcrun simctl` / `devicectl`, app console output (`print()` / stdout / stderr — see **Console output** below), and lldb-dap debug session lifecycle.
 
 | Task type | `task` value | What it does |
 |---|---|---|
@@ -133,6 +133,16 @@ When the user asks to change build configuration, suggest the sidebar instead of
 - The `run-and-debug` task automatically launches and attaches the debugger; you do **not** need to write `.vscode/launch.json` entries by hand for normal app debugging.
 - Auto-continues past SIGSTOP, internal-breakpoint stops, and initial attach stops on physical-device launches (gated on `configurationDone` ack to avoid races).
 
+### Console output
+
+- **`print()` output is supported.** Whatever the app writes to stdout/stderr is captured on every build-and-run (`Cmd+R` / `vsxcode.sidebar.buildAndRun`) with no setup:
+  - **Simulator** — the app is launched with `xcrun simctl launch --console-pty --wait-for-debugger`; its output streams into the shared task terminal, the same panel that showed the `Build and Install` output.
+  - **Physical device** — same terminal, via `xcrun devicectl device process launch --console`.
+  - **macOS** — the app runs directly under lldb-dap, so its output goes to the **Debug Console** instead of a task terminal.
+- For simulator and device runs the **Debug Console** carries only lldb messages — the app's own output is in the task terminal, not there.
+- Simulator and device lines are prefixed with a wall-clock timestamp, e.g. `[2:26:21 PM] Hello from print()`. Strip the `[h:mm:ss AM] ` prefix before comparing output against expected strings.
+- **Don't** run `log stream`, `xcrun simctl spawn <udid> log stream`, or a second `simctl launch --console` to see `print()` output — it is already in the terminal. Tell the user where to look: the Terminal panel for simulator/device runs, the Debug Console for macOS.
+
 ### Format-on-save
 
 - swift-format is the formatter. Format-on-save is supported through the contributed provider.
@@ -148,6 +158,7 @@ Before doing one of these manually, check the table:
 |---|---|
 | Build the app | Run task `xcode-build` / `build` (or `Cmd+Shift+B`) |
 | Build, install, and run | Run task `xcode-build` / `run-and-debug` (or `Cmd+R`) |
+| See the app's `print()` / stdout output | Nothing to set up — it streams into the shared task terminal after a build-and-run (Debug Console on macOS); don't run `log stream` or `simctl spawn … log` by hand |
 | Run tests | Use the Testing sidebar (or task `xcode-build` / `test`) |
 | Switch simulator/device | Run command `vsxcode.sidebar.selectSimulator` |
 | Switch scheme | Run command `vsxcode.sidebar.changeScheme` |
