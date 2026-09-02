@@ -53,7 +53,7 @@ Title bar actions: **Build**, **Build & Run**, **Refresh**, **Sync Files**, and 
 Build tasks are integrated directly into the extension — no shell scripts, `tasks.json`, or `launch.json` files are written to the workspace.
 
 - Uses VS Code's `TaskProvider` API to provide build, build-install, and run-and-debug tasks.
-- Full debug support with breakpoints and `print()` console output for **simulator**, **physical device**, and **macOS** builds.
+- Full debug support with breakpoints and `print()` console output for **simulator**, **physical device**, and **macOS** builds. Simulator and device output streams into the task terminal (the same panel as the build output), with each line prefixed by a wall-clock timestamp; the Debug Console shows only LLDB messages on those runs.
 - Simulator debugging uses `simctl launch --console-pty --wait-for-debugger` with LLDB DAP attach.
 - Physical device debugging uses `devicectl --console --start-stopped` with LLDB DAP remote-ios attach. Supports USB and Wi-Fi connected devices (requires Xcode 15+). Code signing uses the project's existing settings from Xcode.
 - macOS debugging launches the built `.app` directly under LLDB DAP (`request: launch`) — no simulator boot or install step; the app's output streams to the Debug Console.
